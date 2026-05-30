@@ -1,6 +1,6 @@
 # PEP27 Hydrofoil Designer
 
-A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat` file, enter your craft's design parameters, and receive a full aerodynamic sizing report, a **STEP file** ready to import into any major 3D modeling software, and an interactive **3D assembly preview**.
+A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat` file, enter your craft's design parameters, and receive a full aerodynamic sizing report, a **STEP file** ready to import into any major 3D modeling software, an interactive **3D assembly preview**, **polar analysis charts**, **2D vortex panel flow visualization**, and optional **OpenFOAM CFD simulation** with animated results.
 
 ---
 
@@ -14,8 +14,11 @@ A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat`
 - Optional advanced constraints: min/max span, chord, and aspect ratio per foil
 - **Error and warning system** — constraint violations and marginal conditions reported with actionable fix suggestions
 - **Strut length** calculated dynamically from hull clearance + submergence factor × chord
+- **NeuralFoil polar analysis** — CL vs α lift curve and CL/CD drag polar plots with operating-point markers
+- **Vortex panel method** — real-time 2D flow field visualization (pressure and velocity) with animated particle tracers
 - Generates a **STEP solid** of each foil for direct import into CAD software
 - **Interactive 3D assembly preview** — foils, struts, and hull rendered in-browser with drag/zoom controls
+- **OpenFOAM CFD simulation** (requires Docker Desktop) — full viscous 2D CFD via Docker, with animated 2D color-map and 3D streamline visualization rendered client-side
 - **Settings export/import** — save and restore all form values as a JSON file
 - Light and **dark mode** support
 - Unit-flexible inputs: N / lbs / kg, km/h / m/s / knots, fresh / brackish / salt / custom water density
@@ -28,6 +31,7 @@ A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat`
 
 - Python 3.10+
 - Windows, macOS, or Linux
+- **Docker Desktop** (optional — required only for OpenFOAM CFD simulation)
 
 ### Install
 
@@ -120,6 +124,8 @@ Click **Calculate & Preview**. The tool displays for each foil:
 - Profile summary (thickness %, camber %, chord locations, strut length)
 - Airfoil shape plot
 - Full design table (chord, span, area, AR, AoA, lift slope, zero-lift angle, dynamic pressure)
+- **Lift curve** (CL vs α) and **drag polar** (CL vs CD) from NeuralFoil, with operating-point marker
+- **2D flow visualization** — vortex panel method pressure/velocity field with animated particle streamlines
 - Any **errors** (constraint violations, stall risk) with fix suggestions
 - Any **warnings** (marginal but feasible conditions) with suggestions
 - **Download STEP** button
@@ -134,12 +140,67 @@ An interactive 3D scene appears below the results showing the full hydrofoil ass
 
 Sliders and toggles in the sidebar let you adjust hull clearance and foil separation in real time, and toggle the waterline plane, labels, wireframe, and auto-rotate.
 
-### 6. Import into your CAD software
+### 6. OpenFOAM CFD Simulation (requires Docker Desktop)
+
+After calculating, a **CFD Simulation** panel appears automatically below the results. This runs a full viscous 2D CFD simulation using OpenFOAM inside Docker — no local OpenFOAM installation required.
+
+#### One-time setup
+
+**1. Install Docker Desktop**
+Download and install [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/), then start it. The whale icon in the system tray should show "Docker Desktop is running".
+
+**2. Build the OpenFOAM Docker image** (~5–10 min, only needed once)
+
+From the `Hydrofoil-Designer` directory:
+```bash
+docker build -t pep27-openfoam .
+```
+
+This pulls Ubuntu 22.04 and installs OpenFOAM 12 from the official OpenFOAM Foundation apt repository. The final image is several GB. Verify it built successfully:
+```bash
+docker image ls pep27-openfoam
+```
+
+#### Running a simulation
+
+1. Click **Calculate & Preview** with your foil parameters
+2. Scroll down to the **CFD Simulation** panel
+3. Select **Front** or **Rear** foil from the dropdown
+4. Set the **Resolution** slider:
+   | Level | Grid | Est. time |
+   |---|---|---|
+   | Low | ~60×40 cells | ~2 min |
+   | Medium | ~120×80 cells | ~5 min |
+   | High | ~200×120 cells | ~15 min |
+5. Click **Run CFD**
+
+A progress bar tracks each solver stage: STL generation → blockMesh → snappyHexMesh → simpleFoam → post-processing.
+
+#### Results
+
+- **Force badges** — C_L, C_D, L/D ratio, and solver iteration count
+- **Field selector** — switch between Pressure (Cp) and Velocity magnitude
+- **2D color-map canvas** (left) — animated particle tracers show the flow; foil outline overlaid
+- **3D streamline scene** (right) — foil colored by Cp, streamlines across multiple span slices; drag to orbit, auto-rotates
+- **Convergence note** — final residual; a yellow warning banner appears if the solver diverged (results are still shown but may be less accurate)
+
+#### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| "Docker is not running" error | Docker Desktop not started | Start Docker Desktop and wait for the whale icon |
+| "Docker image not found" error | Image not built yet | Run `docker build -t pep27-openfoam .` from `Hydrofoil-Designer/` |
+| Diverged solver warning | High AoA or aggressive profile | Try Low resolution first; reduce AoA if divergence persists |
+| No CFD panel visible | Calculate hasn't been run yet | Click Calculate & Preview first |
+
+**CFD method:** simpleFoam (steady-state incompressible RANS), k-ω SST turbulence model, snappyHexMesh body-fitted mesh. The airfoil geometry is rotated by the operating AoA so the freestream stays horizontal. The domain spans −5c to +15c in X and ±3c in Y with `empty` patches in Z for a true 2D simulation.
+
+### 7. Import into your CAD software
 
 Open or import the downloaded `.step` file in any 3D modeling software that supports STEP (Fusion 360, FreeCAD, SolidWorks, Onshape, etc.).
 The foil appears as a solid body with the correct cross-section and full span.
 
-### 7. Settings export / import
+### 8. Settings export / import
 
 Use **Export Settings** to save all current form values as a JSON file, and **Import Settings** to restore a previously saved session.
 
@@ -171,9 +232,14 @@ Where `a₀ ≈ 0.10966 /°` (thin airfoil theory, 2π per radian) and `α_L=0 �
 
 ```
 Hydrofoil-Designer/
-├── app.py              # Flask routes: GET /, POST /api/calculate, POST /api/step
+├── app.py              # Flask routes: GET /, POST /api/calculate, POST /api/step,
+│                       #   POST /api/cfd, GET /api/cfd/<job_id>
 ├── dat_parser.py       # .dat parsing and profile parameter extraction
 ├── foil_math.py        # Aerodynamic calculations and constraint checks
+├── foil_polar.py       # NeuralFoil polar analysis (CL/CD vs α)
+├── panel_method.py     # 2D vortex panel method flow field solver
+├── foam_runner.py      # OpenFOAM CFD orchestration (STL gen, case files, Docker,
+│                       #   field parsing, scipy interpolation, async job system)
 ├── step_generator.py   # OCP: 2D profile → 3D STEP file
 ├── requirements.txt
 ├── templates/
@@ -183,6 +249,18 @@ Hydrofoil-Designer/
 └── example_data/
     └── naca4418.dat    # NACA 4418 example profile
 ```
+
+---
+
+## API Reference
+
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/` | Serve the UI |
+| `POST` | `/api/calculate` | Sizing + polar + panel method; returns design dict for front and rear foils |
+| `POST` | `/api/step` | Generate and download STEP file for one foil |
+| `POST` | `/api/cfd` | Submit an OpenFOAM CFD job; returns `{"job_id": "..."}` (HTTP 202) |
+| `GET` | `/api/cfd/<job_id>` | Poll job status; returns `{status, progress, message, result?, error_detail?}` |
 
 ---
 

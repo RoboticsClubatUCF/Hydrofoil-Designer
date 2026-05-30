@@ -7,6 +7,17 @@ _STALL_WARN_DEG  = 12.0
 _MIN_CHORD_MM    = 20.0
 
 
+def _interp_cd(polar_data, cl_target):
+    """Interpolate CD from the polar at the given CL target."""
+    cls = polar_data["cls"]
+    cds = polar_data["cds"]
+    for i in range(len(cls) - 1):
+        if cls[i] <= cl_target <= cls[i + 1]:
+            t = (cl_target - cls[i]) / (cls[i + 1] - cls[i])
+            return round(cds[i] * (1 - t) + cds[i + 1] * t, 6)
+    return None
+
+
 def design_foil(
     load_n: float,
     v_takeoff_ms: float,
@@ -25,6 +36,8 @@ def design_foil(
     min_chord_mm: float = None,
     min_ar: float = None,
     max_ar: float = None,
+    # NeuralFoil polar augmentation (None = use thin-airfoil theory)
+    polar_data: dict = None,
 ) -> dict:
     warnings = []
     errors = []
@@ -47,9 +60,10 @@ def design_foil(
     ar      = span_m / chord_m  # = span² / area
 
     # Prandtl lifting-line 3D lift slope (per degree)
-    a = A0_PER_DEG / (1.0 + (57.3 * A0_PER_DEG) / (math.pi * oswald_e * ar))
+    a0 = polar_data["a0_per_deg"] if polar_data else A0_PER_DEG
+    a  = a0 / (1.0 + (57.3 * a0) / (math.pi * oswald_e * ar))
 
-    zero_lift_angle_deg = -profile_camber_pct
+    zero_lift_angle_deg = polar_data["zero_lift_alpha_deg"] if polar_data else -profile_camber_pct
     aoa_deg = cl_target / a + zero_lift_angle_deg
 
     # --- Physical sanity checks ---
@@ -159,6 +173,29 @@ def design_foil(
             ],
         })
 
+    # --- NeuralFoil aerodynamic augmentation ---
+    cd = drag_n = ld_ratio = stall_margin_deg = alpha_stall_out = cl_max = reynolds = None
+    neuralfoil_used = False
+    if polar_data:
+        cd = _interp_cd(polar_data, cl_target)
+        drag_n = round(cd * q * area_m2, 3) if cd is not None else None
+        ld_ratio = round(cl_target / cd, 1) if cd and cd > 0 else None
+        alpha_stall_out = polar_data["alpha_stall"]
+        stall_margin_deg = round(alpha_stall_out - aoa_deg, 1)
+        cl_max = polar_data["cl_max"]
+        reynolds = polar_data["reynolds"]
+        neuralfoil_used = True
+        stall_already = any(aoa_deg > _STALL_ERROR_DEG for _ in [1])
+        if not stall_already and stall_margin_deg < 3.0:
+            warnings.append({
+                "msg": f"Stall margin is only {stall_margin_deg}° (stall at {alpha_stall_out}°).",
+                "suggestions": [
+                    "Increase the CL target to reduce required AoA",
+                    "Use a more cambered profile",
+                    "Increase takeoff speed",
+                ],
+            })
+
     return {
         "area_m2":             round(area_m2, 4),
         "chord_mm":            round(chord_mm, 1),
@@ -172,4 +209,12 @@ def design_foil(
         "warnings":            warnings,
         "errors":              errors,
         "feasible":            len(errors) == 0,
+        "neuralfoil_used":     neuralfoil_used,
+        "cd":                  cd,
+        "drag_n":              drag_n,
+        "ld_ratio":            ld_ratio,
+        "stall_margin_deg":    stall_margin_deg,
+        "alpha_stall":         alpha_stall_out,
+        "cl_max":              cl_max,
+        "reynolds":            reynolds,
     }

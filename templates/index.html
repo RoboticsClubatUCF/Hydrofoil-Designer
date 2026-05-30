@@ -82,9 +82,9 @@
             </label>
             <label>Water type
               <select id="water-type">
-                <option value="1000">Fresh (1 000 kg/m³)</option>
-                <option value="1010" selected>Brackish (1 010 kg/m³)</option>
-                <option value="1025">Salt (1 025 kg/m³)</option>
+                <option value="1000">Fresh (1,000 kg/m³)</option>
+                <option value="1010" selected>Brackish (1,010 kg/m³)</option>
+                <option value="1025">Salt (1,025 kg/m³)</option>
                 <option value="custom">Custom…</option>
               </select>
             </label>
@@ -252,6 +252,26 @@
       <div id="results-rear"  class="result-card"></div>
     </section>
 
+    <!-- ===== 2D FLOW VISUALIZATION ===== -->
+    <section id="flow-panel" style="display:none;">
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div style="padding:1rem 1.5rem 0.75rem; border-bottom:1px solid var(--border);">
+          <h2 style="border-bottom:none; padding-bottom:0;">Flow Visualization &mdash; 2D Potential Flow (Inviscid)</h2>
+          <p class="note" style="margin-top:0.25rem;">Inviscid panel method &mdash; no boundary layer, no separation effects</p>
+        </div>
+        <div class="flow-canvases">
+          <div class="flow-canvas-wrap">
+            <div class="flow-canvas-title">Front Foil</div>
+            <canvas id="flow-canvas-front"></canvas>
+          </div>
+          <div class="flow-canvas-wrap">
+            <div class="flow-canvas-title">Rear Foil</div>
+            <canvas id="flow-canvas-rear"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ===== 3D ASSEMBLY PREVIEW ===== -->
     <section id="viz-panel" style="display:none;">
       <div class="card" style="padding:0; overflow:hidden;">
@@ -289,6 +309,78 @@
       </div>
     </section>
 
+    <!-- ===== CFD SIMULATION (OpenFOAM via Docker) ===== -->
+    <section id="cfd-panel" style="display:none;">
+
+      <!-- Launch card -->
+      <div class="card" id="cfd-launch-card">
+        <h2>CFD Simulation &mdash; OpenFOAM (simpleFoam, k-&omega; SST)</h2>
+        <p class="note">Requires Docker Desktop running with image <code>openfoam/openfoam12-default</code>. Runtime: Low ~2 min &middot; Medium ~5 min &middot; High ~15 min.</p>
+        <div class="cfd-controls">
+          <label>Foil to analyse
+            <select id="cfd-foil-select">
+              <option value="front">Front foil</option>
+              <option value="rear">Rear foil</option>
+            </select>
+          </label>
+          <div class="cfd-resolution-wrap">
+            <label>Mesh resolution
+              <div class="cfd-slider-row">
+                <input type="range" id="cfd-resolution" min="1" max="3" step="1" value="1" />
+                <span id="cfd-resolution-label" class="cfd-res-label">Low (~80k cells, ~2 min)</span>
+              </div>
+            </label>
+            <div class="cfd-res-marks"><span>Low</span><span>Medium</span><span>High</span></div>
+          </div>
+        </div>
+        <button id="cfd-run-btn" class="btn-primary" style="margin-top:1rem;">Run CFD</button>
+        <p id="cfd-launch-error" class="error-msg" style="display:none; margin-top:0.5rem;"></p>
+      </div>
+
+      <!-- Progress card -->
+      <div class="card" id="cfd-progress-card" style="display:none;">
+        <h2>CFD Running&hellip;</h2>
+        <div class="cfd-progress-bar-wrap">
+          <div class="cfd-progress-bar" id="cfd-progress-bar"></div>
+        </div>
+        <p id="cfd-status-text" class="note">Initialising&hellip;</p>
+        <button id="cfd-cancel-btn" class="btn-link" style="margin-top:0.5rem;">Cancel</button>
+      </div>
+
+      <!-- Results card -->
+      <div class="card" id="cfd-results-card" style="display:none;">
+        <h2>CFD Results &mdash; <span id="cfd-results-label"></span></h2>
+        <div id="cfd-warn-banner" class="cfd-warn-banner" style="display:none;"></div>
+        <div class="cfd-forces-row">
+          <div class="cfd-force-badge"><span class="cfd-force-val" id="cfd-cl">—</span><span class="cfd-force-name">C<sub>L</sub></span></div>
+          <div class="cfd-force-badge"><span class="cfd-force-val" id="cfd-cd">—</span><span class="cfd-force-name">C<sub>D</sub></span></div>
+          <div class="cfd-force-badge"><span class="cfd-force-val" id="cfd-ld">—</span><span class="cfd-force-name">L/D</span></div>
+          <div class="cfd-force-badge"><span class="cfd-force-val" id="cfd-iters">—</span><span class="cfd-force-name">Iterations</span></div>
+        </div>
+        <div class="cfd-viz-bar">
+          <label>Field
+            <select id="cfd-field-select">
+              <option value="pressure">Pressure (Cp)</option>
+              <option value="velocity_mag">Velocity magnitude</option>
+            </select>
+          </label>
+          <label class="cfd-tg-label"><input type="checkbox" id="cfd-particle-toggle" checked /> Streamlines</label>
+        </div>
+        <div class="cfd-canvases">
+          <div class="cfd-canvas-wrap">
+            <div class="cfd-canvas-title">2D Flow Field (CFD &mdash; viscous)</div>
+            <canvas id="cfd-canvas-2d"></canvas>
+          </div>
+          <div class="cfd-canvas-wrap">
+            <div class="cfd-canvas-title">3D Streamlines</div>
+            <canvas id="cfd-canvas-3d"></canvas>
+          </div>
+        </div>
+        <p class="note" id="cfd-convergence-note" style="margin-top:0.5rem;"></p>
+      </div>
+
+    </section>
+
   </main>
 
   <footer>
@@ -317,6 +409,198 @@
     // State
     // -----------------------------------------------------------------------
     let lastResults = null;
+
+    // -----------------------------------------------------------------------
+    // Flow visualization globals
+    // -----------------------------------------------------------------------
+    const FLOW_W_CSS = 680, FLOW_H_CSS = 400;
+    const N_PARTICLES = 160, TRAIL_LEN = 14, PARTICLE_DT = 0.010;
+    const FLOW_XMIN = -0.5, FLOW_XMAX = 1.5, FLOW_YMIN = -0.75, FLOW_YMAX = 0.75;
+    const _flowAnimIds = {}, _flowParticles = {};
+
+    function _cpColor(cp, cpMin, cpMax) {
+      const t = Math.max(0, Math.min(1, (cp - cpMin) / Math.max(cpMax - cpMin, 1e-6)));
+      if (t < 0.5) {
+        const s = t * 2;
+        return `rgb(${Math.round(s*255)},${Math.round(s*255)},255)`;
+      }
+      const s = (t - 0.5) * 2;
+      return `rgb(255,${Math.round((1-s)*255)},${Math.round((1-s)*255)})`;
+    }
+
+    function _bilinearInterp(flow, px, py) {
+      const { grid_x, grid_y, grid_u, grid_v } = flow;
+      const nx = grid_x.length, ny = grid_y.length;
+      const x0 = grid_x[0], xN = grid_x[nx-1];
+      const y0 = grid_y[0], yN = grid_y[ny-1];
+      if (px < x0 || px > xN || py < y0 || py > yN) return [0, 0];
+      const tx = (px - x0) / (xN - x0) * (nx - 1);
+      const ty = (py - y0) / (yN - y0) * (ny - 1);
+      const col = Math.min(Math.floor(tx), nx - 2);
+      const row = Math.min(Math.floor(ty), ny - 2);
+      const s = tx - col, t = ty - row;
+      const u = (1-s)*(1-t)*grid_u[row][col]   + s*(1-t)*grid_u[row][col+1]
+              + (1-s)*t    *grid_u[row+1][col] + s*t    *grid_u[row+1][col+1];
+      const v = (1-s)*(1-t)*grid_v[row][col]   + s*(1-t)*grid_v[row][col+1]
+              + (1-s)*t    *grid_v[row+1][col] + s*t    *grid_v[row+1][col+1];
+      return [u, v];
+    }
+
+    function _isInsideMask(flow, px, py) {
+      const { grid_x, grid_y, inside_mask } = flow;
+      const nx = grid_x.length, ny = grid_y.length;
+      const ci = Math.round((px - grid_x[0]) / (grid_x[nx-1] - grid_x[0]) * (nx-1));
+      const ri = Math.round((py - grid_y[0]) / (grid_y[ny-1] - grid_y[0]) * (ny-1));
+      if (ri < 0 || ri >= ny || ci < 0 || ci >= nx) return false;
+      return inside_mask[ri][ci];
+    }
+
+    function _spawnParticle(flow) {
+      const x = FLOW_XMIN;
+      for (let i = 0; i < 20; i++) {
+        const y = FLOW_YMIN + Math.random() * (FLOW_YMAX - FLOW_YMIN);
+        if (!_isInsideMask(flow, x, y)) return { x, y, history: [] };
+      }
+      return { x, y: 0, history: [] };
+    }
+
+    function _advectParticles(canvasId, flow) {
+      const particles = _flowParticles[canvasId];
+      if (!particles) return;
+      for (let k = 0; k < particles.length; k++) {
+        const p = particles[k];
+        const [u, v] = _bilinearInterp(flow, p.x, p.y);
+        p.history.push([p.x, p.y]);
+        if (p.history.length > TRAIL_LEN) p.history.shift();
+        p.x += u * PARTICLE_DT;
+        p.y += v * PARTICLE_DT;
+        const escaped = p.x > FLOW_XMAX || p.x < FLOW_XMIN ||
+                         p.y < FLOW_YMIN || p.y > FLOW_YMAX;
+        if (escaped || _isInsideMask(flow, p.x, p.y)) {
+          const np = _spawnParticle(flow);
+          p.x = np.x; p.y = np.y; p.history = [];
+        }
+      }
+    }
+
+    function drawFlowCanvas(canvasId, foilData) {
+      const flow = foilData && foilData.flow;
+      if (!flow) return;
+
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+
+      if (_flowAnimIds[canvasId]) {
+        cancelAnimationFrame(_flowAnimIds[canvasId]);
+        _flowAnimIds[canvasId] = null;
+      }
+
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = canvas.clientWidth || FLOW_W_CSS;
+      const cssH = canvas.clientHeight || FLOW_H_CSS;
+      canvas.width  = cssW * dpr;
+      canvas.height = cssH * dpr;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+
+      const PAD = 24, CBAR_W = 48;
+      const drawW = cssW - PAD - CBAR_W - 8;
+      const drawH = cssH - 2 * PAD;
+      const domainW = FLOW_XMAX - FLOW_XMIN;
+      const domainH = FLOW_YMAX - FLOW_YMIN;
+      const scale = Math.min(drawW / domainW, drawH / domainH);
+      const offX = PAD + (drawW - scale * domainW) / 2;
+      const offY = PAD + (drawH - scale * domainH) / 2;
+      const toX = x => offX + (x - FLOW_XMIN) * scale;
+      const toY = y => offY + (FLOW_YMAX - y) * scale;
+
+      // Seed particles
+      const particles = [];
+      for (let k = 0; k < N_PARTICLES; k++) {
+        const px = FLOW_XMIN + Math.random() * (FLOW_XMAX - FLOW_XMIN);
+        const py = FLOW_YMIN + Math.random() * (FLOW_YMAX - FLOW_YMIN);
+        if (!_isInsideMask(flow, px, py)) {
+          particles.push({ x: px, y: py, history: [] });
+        } else {
+          particles.push(_spawnParticle(flow));
+        }
+      }
+      _flowParticles[canvasId] = particles;
+
+      const { panel_x, panel_y, cp, cp_min, cp_max } = flow;
+      const N = panel_x.length;
+
+      function drawFrame() {
+        ctx.clearRect(0, 0, cssW, cssH);
+        ctx.fillStyle = '#060e1c';
+        ctx.fillRect(0, 0, cssW, cssH);
+
+        // Cp-coloured foil outline (thick line per panel)
+        ctx.lineWidth = Math.max(2, scale * 0.012);
+        ctx.lineJoin = 'round';
+        for (let i = 0; i < N; i++) {
+          const j = (i + 1) % N;
+          ctx.beginPath();
+          ctx.moveTo(toX(panel_x[i]), toY(panel_y[i]));
+          ctx.lineTo(toX(panel_x[j]), toY(panel_y[j]));
+          ctx.strokeStyle = _cpColor(cp[i], cp_min, cp_max);
+          ctx.stroke();
+        }
+
+        // Color bar
+        const cbX = cssW - CBAR_W + 6;
+        const grad = ctx.createLinearGradient(0, PAD, 0, PAD + drawH);
+        grad.addColorStop(0,   'rgb(255,0,0)');
+        grad.addColorStop(0.5, 'rgb(255,255,255)');
+        grad.addColorStop(1,   'rgb(0,0,255)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(cbX, PAD, 14, drawH);
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(cbX, PAD, 14, drawH);
+        ctx.fillStyle = 'rgba(200,220,255,0.85)';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('Cp', cbX, PAD - 6);
+        ctx.fillText(cp_max.toFixed(2), cbX + 17, PAD + 10);
+        ctx.fillText(cp_min.toFixed(2), cbX + 17, PAD + drawH);
+
+        // Streak particles
+        for (const p of particles) {
+          const len = p.history.length;
+          if (len < 2) continue;
+          for (let i = 1; i < len; i++) {
+            const alpha = (i / len) * 0.75;
+            ctx.beginPath();
+            ctx.moveTo(toX(p.history[i-1][0]), toY(p.history[i-1][1]));
+            ctx.lineTo(toX(p.history[i][0]),   toY(p.history[i][1]));
+            ctx.strokeStyle = `rgba(80,210,255,${alpha.toFixed(2)})`;
+            ctx.lineWidth = 1.2;
+            ctx.stroke();
+          }
+          // Head dot
+          ctx.beginPath();
+          ctx.arc(toX(p.x), toY(p.y), 1.6, 0, 2 * Math.PI);
+          ctx.fillStyle = 'rgba(140,230,255,0.9)';
+          ctx.fill();
+        }
+
+        _advectParticles(canvasId, flow);
+        _flowAnimIds[canvasId] = requestAnimationFrame(drawFrame);
+      }
+
+      drawFrame();
+    }
+
+    function showFlow(data) {
+      if (!data.front.flow && !data.rear.flow) return;
+      document.getElementById('flow-panel').style.display = '';
+      // Defer canvas setup until after layout so clientWidth is non-zero
+      requestAnimationFrame(() => {
+        drawFlowCanvas('flow-canvas-front', data.front);
+        drawFlowCanvas('flow-canvas-rear',  data.rear);
+      });
+    }
 
     const NACA4418 = `NACA 4418
 1.0000     0.0019
@@ -496,6 +780,8 @@
           throw new Error(json.error || 'Unknown error');
         }
         lastResults = json;
+        _lastVMs = payload.v_takeoff_ms;
+        _lastRho = payload.rho;
         renderResults(json);
       } catch(e) {
         errEl.textContent = 'Error: ' + e.message;
@@ -515,6 +801,8 @@
       document.getElementById('results-rear').innerHTML  = buildResultCard('rear',  data.rear,  'Rear Foil');
       document.getElementById('results-panel').scrollIntoView({behavior: 'smooth'});
       showViz(data);
+      showFlow(data);
+      showCfdPanel();
     }
 
     function buildAlerts(warnings, errors) {
@@ -563,15 +851,16 @@
           <h2>${title} &mdash; ${escHtml(d.name)}</h2>
 
           ${buildAlerts(d.warnings, d.errors)}
+          ${!d.neuralfoil_used ? `<div class="alert alert-warn"><strong>Notice:</strong> NeuralFoil polar unavailable — results use thin-airfoil theory (AoA and lift slope are approximate, no drag data).</div>` : ''}
 
           <div class="result-cols">
 
             <div class="result-col">
               <h3>Profile</h3>
               <table class="result-table">
-                <tr><td>Max thickness</td><td><strong>${d.max_thickness_pct}%</strong> at ${d.max_thickness_x_pct}% chord</td></tr>
-                <tr><td>Max camber</td><td><strong>${d.max_camber_pct}%</strong> at ${d.max_camber_x_pct}% chord</td></tr>
-                ${strut ? `<tr><td>Strut length</td><td><strong>${strut.strutMm.toFixed(0)} mm</strong> <span class="note">(${strut.clearMm.toFixed(0)} hull + ${strut.subMm.toFixed(0)} submerged @ ${strut.n}&times;chord)</span></td></tr>` : ''}
+                <tr><td>Max thickness</td><td>${d.max_thickness_pct}% at ${d.max_thickness_x_pct}% chord</td></tr>
+                <tr><td>Max camber</td><td>${d.max_camber_pct}% at ${d.max_camber_x_pct}% chord</td></tr>
+                ${strut ? `<tr><td>Strut length</td><td>${strut.strutMm.toFixed(0)} mm <span class="note">(${strut.clearMm.toFixed(0)} hull + ${strut.subMm.toFixed(0)} submerged @ ${strut.n}&times;chord)</span></td></tr>` : ''}
               </table>
               <img class="foil-plot" src="${d.plot}" alt="${escHtml(d.name)} profile" />
             </div>
@@ -579,24 +868,48 @@
             <div class="result-col">
               <h3>Design Output</h3>
               <table class="result-table">
-                <tr><td>Chord</td><td><strong>${fmtMm(d.chord_mm)}</strong></td></tr>
-                <tr><td>Span</td><td><strong>${fmtMm(d.span_mm)}</strong></td></tr>
-                <tr><td>Planform area</td><td><strong>${fmtM2(d.area_m2)}</strong></td></tr>
-                <tr><td>Aspect ratio</td><td><strong>${d.ar}</strong></td></tr>
-                <tr><td>C<sub>L</sub></td><td><strong>${d.cl}</strong></td></tr>
+                <tr><td>Chord</td><td>${fmtMm(d.chord_mm)}</td></tr>
+                <tr><td>Span</td><td>${fmtMm(d.span_mm)}</td></tr>
+                <tr><td>Planform area</td><td>${fmtM2(d.area_m2)}</td></tr>
+                <tr><td>Aspect ratio</td><td>${d.ar}</td></tr>
+                <tr><td>C<sub>L</sub></td><td>${d.cl}</td></tr>
                 <tr><td>Lift slope <em>a</em></td><td>${d.lift_slope_per_deg.toFixed(4)} /°</td></tr>
                 <tr><td>Zero-lift angle</td><td>${fmtDeg(d.zero_lift_angle_deg)}</td></tr>
-                <tr><td>Angle of attack</td><td><strong>${fmtDeg(d.aoa_deg)}</strong></td></tr>
+                <tr><td>Angle of attack</td><td>${fmtDeg(d.aoa_deg)}</td></tr>
                 <tr><td>Dynamic pressure</td><td>${d.dynamic_pressure_pa.toFixed(1)} Pa</td></tr>
               </table>
 
               <button class="btn-step" onclick="downloadStep('${foilId}')">
-                &#8659; Download STEP for Onshape
+                &#8659; Download STEP
               </button>
-              <p class="note">Import into Onshape via <em>Insert &rarr; Import</em> or drag the file onto a Part Studio.</p>
             </div>
 
+            ${d.neuralfoil_used ? `
+            <div class="result-col">
+              <h3>Aerodynamic Performance</h3>
+              <table class="result-table">
+                <tr><td>Reynolds number</td><td>${Math.round(d.reynolds).toLocaleString()}</td></tr>
+                <tr><td>C<sub>D</sub> (profile drag)</td><td>${d.cd != null ? d.cd.toFixed(4) : '—'}</td></tr>
+                <tr><td>Drag force</td><td>${d.drag_n != null ? d.drag_n.toFixed(2) + ' N' : '—'}</td></tr>
+                <tr><td>L/D ratio</td><td>${d.ld_ratio != null ? d.ld_ratio : '—'}</td></tr>
+                <tr><td>Stall AoA</td><td>${d.alpha_stall != null ? d.alpha_stall.toFixed(1) + '°' : '—'}</td></tr>
+                <tr><td>Stall margin</td><td>${d.stall_margin_deg != null ? d.stall_margin_deg.toFixed(1) + '°' : '—'}</td></tr>
+                <tr><td>Max C<sub>L</sub></td><td>${d.cl_max != null ? d.cl_max.toFixed(3) : '—'}</td></tr>
+              </table>
+            </div>` : ''}
+
           </div>
+
+          ${d.neuralfoil_used && d.plot_lift_curve ? `
+          <div class="polar-plots">
+            <figure class="polar-fig">
+              <img src="${d.plot_lift_curve}" alt="Lift curve" />
+            </figure>
+            <figure class="polar-fig">
+              <img src="${d.plot_drag_polar}" alt="Drag polar" />
+            </figure>
+          </div>` : ''}
+
         </div>`;
     }
 
@@ -647,7 +960,7 @@
       } catch(e) {
         alert('Download failed: ' + e.message);
       } finally {
-        btn.textContent = '&#8659; Download STEP for Onshape';
+        btn.textContent = '⇓ Download STEP';
         btn.disabled    = false;
       }
     }
@@ -1091,6 +1404,537 @@
         { role: 'rear',  ...data.rear  },
       ];
       _buildVizScene(_vizFoils, _vizOpts());
+    }
+
+    // -----------------------------------------------------------------------
+    // CFD state
+    // -----------------------------------------------------------------------
+    let _lastVMs  = null;
+    let _lastRho  = null;
+    let _cfdJobId = null;
+    let _cfdPollTimer = null;
+    let _cfdResult    = null;
+    let _cfdAnimId2D  = null;
+    let _cfdParticles2D = [];
+    let _cfdRenderer3D = null;
+    let _cfdScene3D    = null;
+    let _cfdCamera3D   = null;
+    let _cfdAnimId3D   = null;
+    let _cfdDrag3D     = null;
+    let _cfdTheta3D = 0.0, _cfdPhi3D = 1.3, _cfdRad3D = 3.5;
+
+    // -----------------------------------------------------------------------
+    // CFD — show panel (called from renderResults)
+    // -----------------------------------------------------------------------
+    function showCfdPanel() {
+      document.getElementById('cfd-panel').style.display = '';
+      document.getElementById('cfd-launch-card').style.display  = '';
+      document.getElementById('cfd-progress-card').style.display = 'none';
+      document.getElementById('cfd-results-card').style.display  = 'none';
+      document.getElementById('cfd-launch-error').style.display  = 'none';
+      if (_cfdPollTimer) { clearTimeout(_cfdPollTimer); _cfdPollTimer = null; }
+    }
+
+    // Resolution slider labels
+    const _CFD_RES_LABELS = {
+      '1': 'Low (~80k cells, ~2 min)',
+      '2': 'Medium (~300k cells, ~5 min)',
+      '3': 'High (~1M cells, ~15 min)',
+    };
+    document.getElementById('cfd-resolution').addEventListener('input', function() {
+      document.getElementById('cfd-resolution-label').textContent = _CFD_RES_LABELS[this.value];
+    });
+
+    // -----------------------------------------------------------------------
+    // CFD — launch
+    // -----------------------------------------------------------------------
+    document.getElementById('cfd-run-btn').addEventListener('click', async () => {
+      if (!lastResults || _lastVMs === null) return;
+
+      const foilId   = document.getElementById('cfd-foil-select').value;
+      const foilData = lastResults[foilId];
+      const resolution = parseInt(document.getElementById('cfd-resolution').value);
+
+      document.getElementById('cfd-launch-error').style.display = 'none';
+      document.getElementById('cfd-launch-card').style.display   = 'none';
+      document.getElementById('cfd-progress-card').style.display = '';
+      document.getElementById('cfd-results-card').style.display  = 'none';
+      document.getElementById('cfd-progress-bar').style.width    = '0%';
+      document.getElementById('cfd-status-text').textContent     = 'Submitting job…';
+
+      try {
+        const resp = await fetch('/api/cfd', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            coords:     foilData.coords,
+            chord_mm:   foilData.chord_mm,
+            span_mm:    foilData.span_mm,
+            aoa_deg:    foilData.aoa_deg,
+            v_ms:       _lastVMs,
+            rho:        _lastRho,
+            foil:       foilId,
+            resolution: resolution,
+          }),
+        });
+        const json = await resp.json();
+        if (!resp.ok) throw new Error(json.error || 'Server error');
+        _cfdJobId = json.job_id;
+        _pollCfd();
+      } catch(e) {
+        document.getElementById('cfd-launch-card').style.display   = '';
+        document.getElementById('cfd-progress-card').style.display = 'none';
+        const el = document.getElementById('cfd-launch-error');
+        el.textContent = 'Error: ' + e.message;
+        el.style.display = '';
+      }
+    });
+
+    document.getElementById('cfd-cancel-btn').addEventListener('click', () => {
+      if (_cfdPollTimer) { clearTimeout(_cfdPollTimer); _cfdPollTimer = null; }
+      _cfdJobId = null;
+      document.getElementById('cfd-progress-card').style.display = 'none';
+      document.getElementById('cfd-launch-card').style.display   = '';
+    });
+
+    // -----------------------------------------------------------------------
+    // CFD — polling
+    // -----------------------------------------------------------------------
+    async function _pollCfd() {
+      if (!_cfdJobId) return;
+      try {
+        const resp = await fetch(`/api/cfd/${_cfdJobId}`);
+        const json = await resp.json();
+
+        const pct = json.progress || 0;
+        document.getElementById('cfd-progress-bar').style.width = pct + '%';
+        document.getElementById('cfd-status-text').textContent  = json.message || '';
+
+        if (json.status === 'complete') {
+          _cfdResult = json.result;
+          document.getElementById('cfd-progress-card').style.display = 'none';
+          document.getElementById('cfd-launch-card').style.display   = '';
+          document.getElementById('cfd-results-card').style.display  = '';
+          _renderCfdResults(json.result);
+        } else if (json.status === 'error') {
+          document.getElementById('cfd-progress-card').style.display = 'none';
+          document.getElementById('cfd-launch-card').style.display   = '';
+          const el = document.getElementById('cfd-launch-error');
+          el.textContent = 'CFD failed: ' + (json.error_detail || 'Unknown error.');
+          el.style.display = '';
+        } else {
+          _cfdPollTimer = setTimeout(_pollCfd, 2000);
+        }
+      } catch(e) {
+        _cfdPollTimer = setTimeout(_pollCfd, 5000);
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // CFD — render results
+    // -----------------------------------------------------------------------
+    function _renderCfdResults(r) {
+      const foilLabel = r.foil.charAt(0).toUpperCase() + r.foil.slice(1);
+      document.getElementById('cfd-results-label').textContent =
+        foilLabel + ' foil — ' + r.chord_mm.toFixed(1) + ' mm chord, α=' + r.aoa_deg.toFixed(1) + '°';
+
+      const f = r.forces;
+      document.getElementById('cfd-cl').textContent    = f.cl    !== null ? f.cl.toFixed(3)   : '—';
+      document.getElementById('cfd-cd').textContent    = f.cd    !== null ? f.cd.toFixed(4)   : '—';
+      document.getElementById('cfd-ld').textContent    = f.ld    !== null ? f.ld.toFixed(1)   : '—';
+      document.getElementById('cfd-iters').textContent = r.convergence.iterations;
+
+      const banner = document.getElementById('cfd-warn-banner');
+      if (r.convergence.diverged) {
+        banner.textContent = 'Warning: solver may have diverged. Results are approximate. Try reducing AoA or using Low resolution.';
+        banner.style.display = '';
+      } else {
+        banner.style.display = 'none';
+      }
+
+      const resid = r.convergence.final_residual;
+      document.getElementById('cfd-convergence-note').textContent =
+        'Final residual: ' + (resid !== null ? resid.toExponential(2) : '—') +
+        ' after ' + r.convergence.iterations + ' iterations.';
+
+      // Wire controls
+      document.getElementById('cfd-field-select').onchange = () => {
+        if (_cfdResult) _drawCfd2D('cfd-canvas-2d', _cfdResult);
+      };
+      document.getElementById('cfd-particle-toggle').onchange = () => {
+        if (_cfdAnimId2D) { cancelAnimationFrame(_cfdAnimId2D); _cfdAnimId2D = null; }
+        if (_cfdResult) _drawCfd2D('cfd-canvas-2d', _cfdResult);
+      };
+
+      requestAnimationFrame(() => {
+        _drawCfd2D('cfd-canvas-2d', r);
+        _initCfd3D('cfd-canvas-3d', r);
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // CFD — 2D canvas (color field + animated particle streamlines)
+    // -----------------------------------------------------------------------
+    function _bilinearInterpGrid(field2D, grid, dx, dy) {
+      // dx, dy are normalised (chord = 1) coordinates
+      const nx = grid.nx, ny = grid.ny;
+      const x0 = grid.x_min, xN = grid.x_max;
+      const y0 = grid.y_min, yN = grid.y_max;
+      if (dx < x0 || dx > xN || dy < y0 || dy > yN) return null;
+      const tx = (dx - x0) / (xN - x0) * (nx - 1);
+      const ty = (dy - y0) / (yN - y0) * (ny - 1);
+      const col = Math.min(Math.floor(tx), nx - 2);
+      const row = Math.min(Math.floor(ty), ny - 2);
+      const s = tx - col, t = ty - row;
+      const f00 = field2D[row][col],     f10 = field2D[row][col+1];
+      const f01 = field2D[row+1][col],   f11 = field2D[row+1][col+1];
+      if (f00==null||f10==null||f01==null||f11==null) return null;
+      return (1-s)*(1-t)*f00 + s*(1-t)*f10 + (1-s)*t*f01 + s*t*f11;
+    }
+
+    function _fieldColor(val, fMin, fMax, fieldKey) {
+      const t = Math.max(0, Math.min(1, (val - fMin) / Math.max(fMax - fMin, 1e-9)));
+      if (fieldKey === 'pressure') {
+        // blue→white→red (same as Cp colormap)
+        if (t < 0.5) { const s=t*2; return [Math.round(s*255), Math.round(s*255), 255]; }
+        const s=(t-0.5)*2;
+        return [255, Math.round((1-s)*255), Math.round((1-s)*255)];
+      } else {
+        // velocity: dark blue → cyan → white
+        if (t < 0.5) { const s=t*2; return [0, Math.round(s*210), Math.round(s*255)]; }
+        const s=(t-0.5)*2;
+        return [Math.round(s*255), Math.round(210+s*45), 255];
+      }
+    }
+
+    function _drawCfd2D(canvasId, r) {
+      if (_cfdAnimId2D) { cancelAnimationFrame(_cfdAnimId2D); _cfdAnimId2D = null; }
+
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+
+      const fieldKey  = document.getElementById('cfd-field-select').value;
+      const showParts = document.getElementById('cfd-particle-toggle').checked;
+      const grid      = r.grid;
+      const fieldData = r[fieldKey];
+      if (!fieldData) return;
+
+      const dpr  = window.devicePixelRatio || 1;
+      const cssW = canvas.clientWidth  || 500;
+      const cssH = canvas.clientHeight || 500;
+      canvas.width  = cssW * dpr;
+      canvas.height = cssH * dpr;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+
+      const PAD = 24, CBAR_W = 52;
+      const drawW = cssW - PAD * 2 - CBAR_W;
+      const drawH = cssH - PAD * 2;
+      const domW  = grid.x_max - grid.x_min;
+      const domH  = grid.y_max - grid.y_min;
+      const scale = Math.min(drawW / domW, drawH / domH);
+      const offX  = PAD + (drawW - scale * domW) / 2;
+      const offY  = PAD + (drawH - scale * domH) / 2;
+      const toX   = x => offX + (x - grid.x_min) * scale;
+      const toY   = y => offY + (grid.y_max - y)  * scale;
+
+      // Find field min/max
+      let fMin = Infinity, fMax = -Infinity;
+      for (const row of fieldData) for (const v of row) {
+        if (v == null || !isFinite(v)) continue;
+        if (v < fMin) fMin = v; if (v > fMax) fMax = v;
+      }
+
+      // Render field to ImageData (static, re-rendered each field change)
+      const imgData = ctx.createImageData(cssW, cssH);
+      for (let py = 0; py < cssH; py++) {
+        for (let px = 0; px < cssW; px++) {
+          const dx = grid.x_min + (px - offX) / scale;
+          const dy = grid.y_max - (py - offY) / scale;
+          if (dx < grid.x_min || dx > grid.x_max || dy < grid.y_min || dy > grid.y_max) continue;
+          const val = _bilinearInterpGrid(fieldData, grid, dx, dy);
+          if (val == null || !isFinite(val)) continue;
+          const [rr,gg,bb] = _fieldColor(val, fMin, fMax, fieldKey);
+          const idx = (py * cssW + px) * 4;
+          imgData.data[idx]=rr; imgData.data[idx+1]=gg;
+          imgData.data[idx+2]=bb; imgData.data[idx+3]=230;
+        }
+      }
+
+      function _drawFoilOutline() {
+        const sf = r.foil_surface;
+        if (!sf || !sf.x.length) return;
+        ctx.beginPath();
+        for (let i = 0; i < sf.x.length; i++) {
+          const sx = toX(sf.x[i]), sy = toY(sf.y[i]);
+          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+        }
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(20,30,50,0.95)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(160,200,255,0.7)';
+        ctx.lineWidth = 1.5; ctx.stroke();
+      }
+
+      function _drawColorBar() {
+        const cbX = cssW - CBAR_W + 8;
+        const grad = ctx.createLinearGradient(0, PAD, 0, PAD + drawH);
+        if (fieldKey === 'pressure') {
+          grad.addColorStop(0, 'rgb(255,0,0)');
+          grad.addColorStop(0.5, 'rgb(255,255,255)');
+          grad.addColorStop(1, 'rgb(0,0,255)');
+        } else {
+          grad.addColorStop(0, 'rgb(255,255,255)');
+          grad.addColorStop(0.5, 'rgb(0,210,255)');
+          grad.addColorStop(1, 'rgb(0,0,100)');
+        }
+        ctx.fillStyle = grad;
+        ctx.fillRect(cbX, PAD, 14, drawH);
+        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(cbX, PAD, 14, drawH);
+        ctx.fillStyle = 'rgba(200,220,255,0.85)';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(fieldKey === 'pressure' ? 'Cp' : 'U m/s', cbX, PAD - 6);
+        ctx.fillText(fMax.toFixed(2), cbX + 17, PAD + 10);
+        ctx.fillText(fMin.toFixed(2), cbX + 17, PAD + drawH);
+      }
+
+      // Seed particles using velocity field
+      const CFD_N_PARTICLES = 120;
+      const CFD_TRAIL = 16;
+      const CFD_DT    = 0.012 / Math.max(r.v_ms || 1, 0.1);
+
+      function _spawnCfdParticle() {
+        for (let i = 0; i < 15; i++) {
+          const x = grid.x_min + Math.random() * 0.05;
+          const y = grid.y_min + Math.random() * (grid.y_max - grid.y_min);
+          const ux = _bilinearInterpGrid(r.velocity_x, grid, x, y);
+          if (ux !== null) return { x, y, history: [] };
+        }
+        return { x: grid.x_min, y: 0, history: [] };
+      }
+
+      _cfdParticles2D = [];
+      if (showParts) {
+        for (let k = 0; k < CFD_N_PARTICLES; k++) {
+          const y0 = grid.y_min + ((k + 0.5) / CFD_N_PARTICLES) * (grid.y_max - grid.y_min);
+          _cfdParticles2D.push({ x: grid.x_min + Math.random()*0.1, y: y0, history: [] });
+        }
+      }
+
+      function drawFrame() {
+        ctx.clearRect(0, 0, cssW, cssH);
+        ctx.fillStyle = '#060e1c';
+        ctx.fillRect(0, 0, cssW, cssH);
+        ctx.putImageData(imgData, 0, 0);
+
+        _drawFoilOutline();
+        _drawColorBar();
+
+        if (showParts) {
+          for (const p of _cfdParticles2D) {
+            const ux = _bilinearInterpGrid(r.velocity_x, grid, p.x, p.y) || 0;
+            const uy = _bilinearInterpGrid(r.velocity_y, grid, p.x, p.y) || 0;
+            p.history.push([p.x, p.y]);
+            if (p.history.length > CFD_TRAIL) p.history.shift();
+            const spd = Math.sqrt(ux*ux + uy*uy) || 1;
+            p.x += (ux/spd) * CFD_DT * (r.v_ms || 1) * 0.3;
+            p.y += (uy/spd) * CFD_DT * (r.v_ms || 1) * 0.3;
+            const escaped = p.x > grid.x_max || p.x < grid.x_min ||
+                            p.y > grid.y_max || p.y < grid.y_min;
+            if (escaped) {
+              const np = _spawnCfdParticle();
+              p.x = np.x; p.y = np.y; p.history = [];
+            }
+            const len = p.history.length;
+            for (let i = 1; i < len; i++) {
+              ctx.beginPath();
+              ctx.moveTo(toX(p.history[i-1][0]), toY(p.history[i-1][1]));
+              ctx.lineTo(toX(p.history[i][0]),   toY(p.history[i][1]));
+              ctx.strokeStyle = `rgba(80,210,255,${(i/len*0.8).toFixed(2)})`;
+              ctx.lineWidth = 1.1; ctx.stroke();
+            }
+            if (len > 0) {
+              ctx.beginPath();
+              ctx.arc(toX(p.x), toY(p.y), 1.5, 0, 2*Math.PI);
+              ctx.fillStyle = 'rgba(140,235,255,0.9)'; ctx.fill();
+            }
+          }
+        }
+
+        _cfdAnimId2D = requestAnimationFrame(drawFrame);
+      }
+
+      drawFrame();
+    }
+
+    // -----------------------------------------------------------------------
+    // CFD — 3D Three.js scene (streamlines + pressure-coloured foil)
+    // -----------------------------------------------------------------------
+    function _computeStreamlines3D(r, nSeeds) {
+      const grid   = r.grid;
+      const lines  = [];
+      const MAX_STEPS = 280;
+      const DT     = 0.08;  // normalised chord units per step
+
+      for (let s = 0; s < nSeeds; s++) {
+        const y0 = grid.y_min + (s + 0.5) / nSeeds * (grid.y_max - grid.y_min);
+        let x = grid.x_min + 0.02, y = y0;
+        const pts = [[x, y]];
+
+        for (let step = 0; step < MAX_STEPS; step++) {
+          const ux = _bilinearInterpGrid(r.velocity_x, grid, x, y);
+          const uy = _bilinearInterpGrid(r.velocity_y, grid, x, y);
+          if (ux === null) break;
+          const spd = Math.sqrt(ux*ux + uy*uy) || 1;
+          x += (ux/spd) * DT;
+          y += (uy/spd) * DT;
+          if (x > grid.x_max || x < grid.x_min || y > grid.y_max || y < grid.y_min) break;
+          pts.push([x, y]);
+        }
+        if (pts.length >= 3) lines.push(pts);
+      }
+      return lines;
+    }
+
+    function _initCfd3D(canvasId, r) {
+      // Dispose previous
+      if (_cfdRenderer3D) { _cfdRenderer3D.dispose(); _cfdRenderer3D = null; }
+      if (_cfdAnimId3D)   { cancelAnimationFrame(_cfdAnimId3D); _cfdAnimId3D = null; }
+
+      const cvs = document.getElementById(canvasId);
+      if (!cvs) return;
+
+      const chord_m   = r.chord_mm / 1000.0;
+      const vizSpan_m = Math.max((r.span_mm || 500) / 1000.0 / 4, chord_m * 0.3);
+      const grid      = r.grid;
+
+      _cfdRenderer3D = new THREE.WebGLRenderer({ canvas: cvs, antialias: true, alpha: false });
+      _cfdRenderer3D.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      _cfdScene3D    = new THREE.Scene();
+      _cfdScene3D.background = new THREE.Color(0x060e1c);
+
+      const aspect = (cvs.clientWidth || 500) / (cvs.clientHeight || 500);
+      const viewH  = (grid.y_max - grid.y_min) * chord_m * 1.1;
+      _cfdCamera3D = new THREE.OrthographicCamera(
+        -viewH*aspect*0.5,  viewH*aspect*0.5,
+         viewH*0.5,        -viewH*0.5,
+        0.001, 200
+      );
+      _cfdCamera3D.position.set(0, 0, 5);
+
+      _cfdScene3D.add(new THREE.AmbientLight(0xffffff, 0.7));
+      const dl = new THREE.DirectionalLight(0xffffff, 1.2);
+      dl.position.set(2, 3, 5); _cfdScene3D.add(dl);
+
+      // ---- Foil geometry with Cp vertex colors ----
+      const sf    = r.foil_surface;
+      const nPts  = sf && sf.x.length ? sf.x.length : 0;
+
+      if (nPts >= 3) {
+        const pts2D = sf.x.map((x, i) => new THREE.Vector2(x * chord_m, sf.y[i] * chord_m));
+        const shape  = new THREE.Shape(pts2D);
+        const extGeo = new THREE.ExtrudeGeometry(shape, {
+          depth: vizSpan_m, bevelEnabled: false, steps: 1
+        });
+        extGeo.translate(0, 0, -vizSpan_m / 2);
+
+        // Vertex colors from Cp
+        const cpArr = sf.cp;
+        const cpMin = Math.min(...cpArr), cpMax = Math.max(...cpArr);
+        const pos   = extGeo.attributes.position;
+        const cols  = new Float32Array(pos.count * 3);
+        for (let i = 0; i < pos.count; i++) {
+          const vx = pos.getX(i), vy = pos.getY(i);
+          let bestD = Infinity, nearCp = 0;
+          for (let j = 0; j < nPts; j++) {
+            const d = (vx - sf.x[j]*chord_m)**2 + (vy - sf.y[j]*chord_m)**2;
+            if (d < bestD) { bestD = d; nearCp = cpArr[j]; }
+          }
+          const t = Math.max(0, Math.min(1, (nearCp - cpMin) / Math.max(cpMax-cpMin, 1e-6)));
+          if (t < 0.5) {
+            const s = t*2;
+            cols[i*3]=s; cols[i*3+1]=s; cols[i*3+2]=1;
+          } else {
+            const s=(t-0.5)*2;
+            cols[i*3]=1; cols[i*3+1]=1-s; cols[i*3+2]=1-s;
+          }
+        }
+        extGeo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+        const foilMat = new THREE.MeshStandardMaterial({
+          vertexColors: true, side: THREE.DoubleSide, roughness: 0.3, metalness: 0.1
+        });
+        const foilMesh = new THREE.Mesh(extGeo, foilMat);
+        // Offset: foil coords are in normalised space (c/4 at origin), scale to metres
+        _cfdScene3D.add(foilMesh);
+      }
+
+      // ---- Streamlines ----
+      const nSeeds    = 25 * r.resolution_level;
+      const streamlines = _computeStreamlines3D(r, nSeeds);
+      const nSpanLines  = 5;
+
+      for (const sl of streamlines) {
+        if (sl.length < 2) continue;
+        for (let zi = 0; zi < nSpanLines; zi++) {
+          const zOff = (zi / (nSpanLines-1) - 0.5) * vizSpan_m;
+          const pts3D = sl.map(([x,y]) =>
+            new THREE.Vector3((x - 0.25) * chord_m, y * chord_m, zOff)
+          );
+          const geo = new THREE.BufferGeometry().setFromPoints(pts3D);
+          const mat = new THREE.LineBasicMaterial({
+            color: 0x40d0ff, transparent: true, opacity: 0.45
+          });
+          _cfdScene3D.add(new THREE.Line(geo, mat));
+        }
+      }
+
+      // Resize helper
+      function _resizeCfd3D() {
+        const w = cvs.clientWidth || 500, h = cvs.clientHeight || 500;
+        _cfdRenderer3D.setSize(w, h, false);
+        const asp2 = w / h;
+        _cfdCamera3D.left   = -viewH*asp2*0.5;
+        _cfdCamera3D.right  =  viewH*asp2*0.5;
+        _cfdCamera3D.updateProjectionMatrix();
+      }
+      window.addEventListener('resize', _resizeCfd3D);
+      _resizeCfd3D();
+
+      // Orbit controls
+      cvs.addEventListener('pointerdown', e => {
+        _cfdDrag3D = { x: e.clientX, y: e.clientY };
+        cvs.setPointerCapture(e.pointerId);
+      });
+      cvs.addEventListener('pointermove', e => {
+        if (!_cfdDrag3D) return;
+        const dx = e.clientX - _cfdDrag3D.x;
+        const dy = e.clientY - _cfdDrag3D.y;
+        _cfdDrag3D.x = e.clientX; _cfdDrag3D.y = e.clientY;
+        _cfdTheta3D -= dx * 0.006;
+        _cfdPhi3D = Math.max(0.1, Math.min(Math.PI-0.1, _cfdPhi3D - dy * 0.006));
+      });
+      cvs.addEventListener('wheel', e => {
+        e.preventDefault();
+        _cfdRad3D = Math.max(0.5, Math.min(15, _cfdRad3D * (1 + e.deltaY * 0.001)));
+      }, { passive: false });
+      window.addEventListener('pointerup', () => { _cfdDrag3D = null; });
+
+      // Animate
+      function loop3D() {
+        _cfdAnimId3D = requestAnimationFrame(loop3D);
+        _cfdTheta3D += 0.004;
+        _cfdCamera3D.position.set(
+          _cfdRad3D * Math.sin(_cfdPhi3D) * Math.sin(_cfdTheta3D),
+          _cfdRad3D * Math.cos(_cfdPhi3D),
+          _cfdRad3D * Math.sin(_cfdPhi3D) * Math.cos(_cfdTheta3D)
+        );
+        _cfdCamera3D.lookAt(0, 0, 0);
+        _cfdRenderer3D.render(_cfdScene3D, _cfdCamera3D);
+      }
+      loop3D();
     }
 
   </script>
