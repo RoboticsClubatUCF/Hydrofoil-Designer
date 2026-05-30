@@ -1,6 +1,6 @@
-# PEP27 Hydrofoil Maker
+# PEP27 Hydrofoil Designer
 
-A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat` file, enter your craft's design parameters, and receive a full aerodynamic sizing report plus a **STEP file** ready to import into Onshape.
+A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat` file, enter your craft's design parameters, and receive a full aerodynamic sizing report plus a **STEP file** ready to import into any major 3D modeling software.
 
 ---
 

@@ -3,13 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PEP27 Hydrofoil Maker</title>
+  <title>Hydrofoil Designer</title>
   <link rel="stylesheet" href="/static/style.css" />
+  <script>
+    (function() {
+      var t = localStorage.getItem('hf-theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    })();
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
   <header>
-    <h1>PEP27 Hydrofoil Maker</h1>
-    <p class="subtitle">Paste an airfoil <code>.dat</code> profile, enter design parameters, and download a STEP file for Onshape.</p>
+    <div class="header-inner">
+      <div>
+        <h1>Hydrofoil Designer</h1>
+        <p class="subtitle">Self-hosted web tool for designing hydrofoil wings from standard airfoil profiles by <a href="https://rccf.club/">RCCF</a></p>
+      </div>
+      <button id="theme-toggle" class="theme-toggle-btn" aria-label="Toggle dark mode">&#9788;</button>
+    </div>
   </header>
 
   <main>
@@ -19,7 +32,7 @@
       <!-- Front foil -->
       <div class="card">
         <h2>Front Foil Profile</h2>
-        <label>Paste <code>.dat</code> content
+        <label>Paste an airfoil .dat profile found at <a href="http://airfoiltools.com/airfoil">Airfoil Tools</a>
           <textarea id="front-dat" rows="10" placeholder="NACA 4418&#10;1.0000  0.0019&#10;0.9500  0.0189&#10;..."></textarea>
         </label>
         <button type="button" class="btn-link" id="load-example-front">Load NACA 4418 example</button>
@@ -33,7 +46,7 @@
           <label><input type="radio" name="rear-mode" value="different" /> Different profile</label>
         </div>
         <div id="rear-dat-wrap" style="display:none;">
-          <label>Paste rear foil <code>.dat</code> content
+          <label>Paste an airfoil .dat profile found at <a href="http://airfoiltools.com/airfoil">Airfoil Tools</a>
             <textarea id="rear-dat" rows="10" placeholder="NACA 4412&#10;1.0000  0.0013&#10;..."></textarea>
           </label>
         </div>
@@ -44,6 +57,7 @@
         <h2>Design Parameters</h2>
         <div class="param-grid">
 
+          <!-- Craft & Conditions -->
           <div class="param-group">
             <h3>Craft &amp; Conditions</h3>
             <label>Total craft weight
@@ -79,40 +93,152 @@
                 <input type="number" id="rho-custom" value="1010" min="900" max="1100" step="1" />
               </label>
             </div>
+            <label>Target hull clearance
+              <div class="input-unit">
+                <input type="number" id="hull-clearance-val" value="400" min="50" step="10" />
+                <select id="hull-clearance-unit">
+                  <option value="mm" selected>mm</option>
+                  <option value="m">m</option>
+                </select>
+              </div>
+            </label>
           </div>
 
+          <!-- Load Distribution -->
           <div class="param-group">
             <h3>Load Distribution</h3>
             <label>Front foil load share (%)
               <input type="number" id="load-split" value="70" min="1" max="99" step="1" />
             </label>
             <p class="note" id="rear-share-note">Rear foil carries <strong>30%</strong></p>
+            <label><span>Submergence factor <em>n</em></span>
+              <input type="number" id="submergence-n" value="1.5" min="1.0" max="2.0" step="0.1" />
+            </label>
+            <p class="note">Strut = hull clearance + n &times; chord. n = 1–2 keeps the foil submerged to prevent ventilation.</p>
           </div>
 
+          <!-- Structural Sizing -->
           <div class="param-group">
-            <h3>Structural Limits</h3>
-            <label>Max front foil thickness (mm)
-              <input type="number" id="max-t-front" value="30" min="1" step="0.5" />
-            </label>
-            <label>Max rear foil thickness (mm)
-              <input type="number" id="max-t-rear" value="15" min="1" step="0.5" />
-            </label>
+            <h3>Structural Sizing</h3>
+
+            <div class="sizing-block">
+              <div class="sizing-header">
+                <span class="sizing-label">Front foil</span>
+                <div class="radio-group">
+                  <label><input type="radio" name="front-sizing" value="thickness" checked /> Thickness limit</label>
+                  <label><input type="radio" name="front-sizing" value="chord" /> Direct chord</label>
+                </div>
+              </div>
+              <div id="front-thickness-field">
+                <label>Max thickness (mm)
+                  <input type="number" id="max-t-front" value="30" min="1" step="0.5" />
+                </label>
+              </div>
+              <div id="front-chord-field" style="display:none;">
+                <label>Chord length (mm)
+                  <input type="number" id="chord-front" value="167" min="10" step="1" />
+                </label>
+              </div>
+            </div>
+
+            <div class="sizing-block">
+              <div class="sizing-header">
+                <span class="sizing-label">Rear foil</span>
+                <div class="radio-group">
+                  <label><input type="radio" name="rear-sizing" value="thickness" checked /> Thickness limit</label>
+                  <label><input type="radio" name="rear-sizing" value="chord" /> Direct chord</label>
+                </div>
+              </div>
+              <div id="rear-thickness-field">
+                <label>Max thickness (mm)
+                  <input type="number" id="max-t-rear" value="15" min="1" step="0.5" />
+                </label>
+              </div>
+              <div id="rear-chord-field" style="display:none;">
+                <label>Chord length (mm)
+                  <input type="number" id="chord-rear" value="100" min="10" step="1" />
+                </label>
+              </div>
+            </div>
           </div>
 
+          <!-- Aerodynamic Targets -->
           <div class="param-group">
             <h3>Aerodynamic Targets</h3>
-            <label>Front foil C<sub>L</sub>
+            <label><span>Front foil C<sub>L</sub></span>
               <input type="number" id="cl-front" value="0.8" min="0.1" max="2.0" step="0.01" />
             </label>
-            <label>Rear foil C<sub>L</sub>
+            <label><span>Rear foil C<sub>L</sub></span>
               <input type="number" id="cl-rear" value="0.63" min="0.1" max="2.0" step="0.01" />
             </label>
-            <label>Oswald efficiency <em>e</em>
+            <label><span>Oswald efficiency <em>e</em></span>
               <input type="number" id="oswald-e" value="0.9" min="0.5" max="1.0" step="0.01" />
             </label>
           </div>
 
         </div><!-- /param-grid -->
+
+        <!-- Advanced constraints (collapsible) -->
+        <details class="constraints-details">
+          <summary>Advanced Constraints <span class="note">— optional, leave blank to unconstrain</span></summary>
+          <div class="constraints-body">
+
+            <div class="constraints-col">
+              <h4>Front Foil Bounds</h4>
+              <div class="constraints-fields">
+                <label>Min span (mm)
+                  <input type="number" id="front-min-span" placeholder="none" min="0" step="10" />
+                </label>
+                <label>Max span (mm)
+                  <input type="number" id="front-max-span" placeholder="none" min="0" step="10" />
+                </label>
+                <label>Min chord (mm)
+                  <input type="number" id="front-min-chord" placeholder="none" min="0" step="1" />
+                </label>
+                <label>Max chord (mm)
+                  <input type="number" id="front-max-chord" placeholder="none" min="0" step="1" />
+                </label>
+                <label>Min AR
+                  <input type="number" id="front-min-ar" placeholder="none" min="0" step="0.5" />
+                </label>
+                <label>Max AR
+                  <input type="number" id="front-max-ar" placeholder="none" min="0" step="0.5" />
+                </label>
+              </div>
+            </div>
+
+            <div class="constraints-col">
+              <h4>Rear Foil Bounds</h4>
+              <div class="constraints-fields">
+                <label>Min span (mm)
+                  <input type="number" id="rear-min-span" placeholder="none" min="0" step="10" />
+                </label>
+                <label>Max span (mm)
+                  <input type="number" id="rear-max-span" placeholder="none" min="0" step="10" />
+                </label>
+                <label>Min chord (mm)
+                  <input type="number" id="rear-min-chord" placeholder="none" min="0" step="1" />
+                </label>
+                <label>Max chord (mm)
+                  <input type="number" id="rear-max-chord" placeholder="none" min="0" step="1" />
+                </label>
+                <label>Min AR
+                  <input type="number" id="rear-min-ar" placeholder="none" min="0" step="0.5" />
+                </label>
+                <label>Max AR
+                  <input type="number" id="rear-max-ar" placeholder="none" min="0" step="0.5" />
+                </label>
+              </div>
+            </div>
+
+          </div>
+        </details>
+
+        <div class="settings-io">
+          <button type="button" class="btn-secondary" id="export-settings-btn">&#8657; Export Settings</button>
+          <button type="button" class="btn-secondary" id="import-settings-btn">&#8659; Import Settings</button>
+          <input type="file" id="import-settings-input" accept=".json" style="display:none;" />
+        </div>
 
         <button id="calculate-btn" class="btn-primary">Calculate &amp; Preview</button>
         <p id="calc-error" class="error-msg" style="display:none;"></p>
@@ -122,19 +248,71 @@
 
     <!-- ===== RESULTS PANEL ===== -->
     <section id="results-panel" style="display:none;">
-
       <div id="results-front" class="result-card"></div>
       <div id="results-rear"  class="result-card"></div>
+    </section>
 
+    <!-- ===== 3D ASSEMBLY PREVIEW ===== -->
+    <section id="viz-panel" style="display:none;">
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div style="padding:1rem 1.5rem 0.75rem; border-bottom:1px solid var(--border);">
+          <h2 style="border-bottom:none; padding-bottom:0;">3D Assembly Preview</h2>
+        </div>
+        <div id="viz-inner">
+          <div id="viz-sidebar">
+            <div class="viz-label">Layout</div>
+            <div class="viz-ctl">
+              <span>Hull clearance</span>
+              <input type="range" id="viz-clear" min="0.05" max="0.5" step="0.01" value="0.25">
+              <span class="viz-val" id="viz-clear-val">0.25 m</span>
+            </div>
+            <div class="viz-ctl">
+              <span>Foil separation</span>
+              <input type="range" id="viz-boom" min="0.4" max="2.5" step="0.05" value="1.10">
+              <span class="viz-val" id="viz-boom-val">1.10 m</span>
+            </div>
+            <div class="viz-label">Display</div>
+            <div class="viz-toggles">
+              <label class="viz-tg"><input type="checkbox" id="viz-water" checked> Waterline</label>
+              <label class="viz-tg"><input type="checkbox" id="viz-label"> Labels</label>
+              <label class="viz-tg"><input type="checkbox" id="viz-wire"> Wireframe</label>
+              <label class="viz-tg"><input type="checkbox" id="viz-spin"> Auto-rotate</label>
+            </div>
+            <div class="viz-hud">
+              Drag to orbit &middot; scroll to zoom<br>
+              Right-drag or Shift-drag to pan<br>
+              <span class="viz-dot-f">&#9632;</span> Front foil &nbsp;<span class="viz-dot-r">&#9632;</span> Rear foil
+            </div>
+          </div>
+          <canvas id="viz-canvas"></canvas>
+        </div>
+      </div>
     </section>
 
   </main>
 
   <footer>
-    <p>PEP27 &mdash; Hydrofoil Maker &mdash; Self-hosted tool</p>
+    <p>Hydrofoil Designer &mdash; an RCCF Tool</p>
   </footer>
 
+  <div id="toast" class="toast" aria-live="polite"></div>
+
   <script>
+    // -----------------------------------------------------------------------
+    // Theme toggle
+    // -----------------------------------------------------------------------
+    (function() {
+      const btn = document.getElementById('theme-toggle');
+      const root = document.documentElement;
+      btn.textContent = root.getAttribute('data-theme') === 'dark' ? '☽' : '☀';
+      btn.addEventListener('click', function() {
+        const isDark = root.getAttribute('data-theme') === 'dark';
+        root.setAttribute('data-theme', isDark ? 'light' : 'dark');
+        btn.textContent = isDark ? '☀' : '☽';
+        localStorage.setItem('hf-theme', isDark ? 'light' : 'dark');
+      });
+    })();
+
     // -----------------------------------------------------------------------
     // State
     // -----------------------------------------------------------------------
@@ -191,8 +369,16 @@
       return val;
     }
 
+    // Return a positive float from an optional constraint field, or null if empty/invalid
+    function optNum(id) {
+      const el = document.getElementById(id);
+      if (!el || el.value === '') return null;
+      const v = parseFloat(el.value);
+      return (isNaN(v) || v <= 0) ? null : v;
+    }
+
     // -----------------------------------------------------------------------
-    // Rear foil radio toggle
+    // Rear foil profile toggle
     // -----------------------------------------------------------------------
     document.querySelectorAll('input[name="rear-mode"]').forEach(r => {
       r.addEventListener('change', () => {
@@ -200,6 +386,22 @@
           r.value === 'different' && r.checked ? 'block' : 'none';
       });
     });
+
+    // -----------------------------------------------------------------------
+    // Structural sizing mode toggles
+    // -----------------------------------------------------------------------
+    function bindSizingToggle(name, thicknessFieldId, chordFieldId) {
+      document.querySelectorAll(`input[name="${name}"]`).forEach(r => {
+        r.addEventListener('change', () => {
+          document.getElementById(thicknessFieldId).style.display =
+            r.value === 'thickness' && r.checked ? 'block' : 'none';
+          document.getElementById(chordFieldId).style.display =
+            r.value === 'chord' && r.checked ? 'block' : 'none';
+        });
+      });
+    }
+    bindSizingToggle('front-sizing', 'front-thickness-field', 'front-chord-field');
+    bindSizingToggle('rear-sizing',  'rear-thickness-field',  'rear-chord-field');
 
     // -----------------------------------------------------------------------
     // Load split note
@@ -229,13 +431,16 @@
     // Calculate
     // -----------------------------------------------------------------------
     document.getElementById('calculate-btn').addEventListener('click', async () => {
-      const btn = document.getElementById('calculate-btn');
-      const errEl = document.getElementById('calc-error');
+      const btn    = document.getElementById('calculate-btn');
+      const errEl  = document.getElementById('calc-error');
       errEl.style.display = 'none';
       btn.textContent = 'Calculating…';
-      btn.disabled = true;
+      btn.disabled    = true;
 
-      const rearMode = document.querySelector('input[name="rear-mode"]:checked').value;
+      const rearMode    = document.querySelector('input[name="rear-mode"]:checked').value;
+      const frontSizing = document.querySelector('input[name="front-sizing"]:checked').value;
+      const rearSizing  = document.querySelector('input[name="rear-sizing"]:checked').value;
+
       const waterSel = document.getElementById('water-type');
       const rho = waterSel.value === 'custom'
         ? parseFloat(document.getElementById('rho-custom').value)
@@ -253,11 +458,31 @@
                               document.getElementById('v-takeoff-unit').value),
         rho:                rho,
         load_split_pct:     parseFloat(document.getElementById('load-split').value),
-        max_t_front_mm:     parseFloat(document.getElementById('max-t-front').value),
-        max_t_rear_mm:      parseFloat(document.getElementById('max-t-rear').value),
         cl_front:           parseFloat(document.getElementById('cl-front').value),
         cl_rear:            parseFloat(document.getElementById('cl-rear').value),
         oswald_e:           parseFloat(document.getElementById('oswald-e').value),
+
+        // Sizing mode
+        front_sizing_mode:  frontSizing,
+        rear_sizing_mode:   rearSizing,
+        max_t_front_mm:     frontSizing === 'thickness' ? parseFloat(document.getElementById('max-t-front').value) : null,
+        chord_front_mm:     frontSizing === 'chord'     ? parseFloat(document.getElementById('chord-front').value) : null,
+        max_t_rear_mm:      rearSizing  === 'thickness' ? parseFloat(document.getElementById('max-t-rear').value) : null,
+        chord_rear_mm:      rearSizing  === 'chord'     ? parseFloat(document.getElementById('chord-rear').value) : null,
+
+        // Advanced constraints
+        front_min_span_mm:  optNum('front-min-span'),
+        front_max_span_mm:  optNum('front-max-span'),
+        front_min_chord_mm: optNum('front-min-chord'),
+        front_max_chord_mm: optNum('front-max-chord'),
+        front_min_ar:       optNum('front-min-ar'),
+        front_max_ar:       optNum('front-max-ar'),
+        rear_min_span_mm:   optNum('rear-min-span'),
+        rear_max_span_mm:   optNum('rear-max-span'),
+        rear_min_chord_mm:  optNum('rear-min-chord'),
+        rear_max_chord_mm:  optNum('rear-max-chord'),
+        rear_min_ar:        optNum('rear-min-ar'),
+        rear_max_ar:        optNum('rear-max-ar'),
       };
 
       try {
@@ -277,7 +502,7 @@
         errEl.style.display = 'block';
       } finally {
         btn.textContent = 'Calculate & Preview';
-        btn.disabled = false;
+        btn.disabled    = false;
       }
     });
 
@@ -289,17 +514,55 @@
       document.getElementById('results-front').innerHTML = buildResultCard('front', data.front, 'Front Foil');
       document.getElementById('results-rear').innerHTML  = buildResultCard('rear',  data.rear,  'Rear Foil');
       document.getElementById('results-panel').scrollIntoView({behavior: 'smooth'});
+      showViz(data);
+    }
+
+    function buildAlerts(warnings, errors) {
+      let html = '';
+      if (errors && errors.length > 0) {
+        for (const e of errors) {
+          html += `<div class="alert alert-error">
+            <strong>Design Error:</strong> ${escHtml(e.msg)}
+            <ul class="alert-suggestions">${e.suggestions.map(s => `<li>${escHtml(s)}</li>`).join('')}</ul>
+          </div>`;
+        }
+      }
+      if (warnings && warnings.length > 0) {
+        for (const w of warnings) {
+          html += `<div class="alert alert-warn">
+            <strong>Warning:</strong> ${escHtml(w.msg)}
+            <ul class="alert-suggestions">${w.suggestions.map(s => `<li>${escHtml(s)}</li>`).join('')}</ul>
+          </div>`;
+        }
+      }
+      return html;
+    }
+
+    function getStrutMm(chord_mm) {
+      const clearVal  = parseFloat(document.getElementById('hull-clearance-val').value) || 0;
+      const clearUnit = document.getElementById('hull-clearance-unit').value;
+      const clearMm   = clearUnit === 'm' ? clearVal * 1000 : clearVal;
+      const n         = parseFloat(document.getElementById('submergence-n').value) || 1.5;
+      const subMm     = n * chord_mm;
+      return { clearMm, n, subMm, strutMm: clearMm + subMm };
     }
 
     function buildResultCard(foilId, d, title) {
-      const fmtMm = v => v != null ? v.toFixed(1) + ' mm' : '—';
-      const fmtM2 = v => v != null ? v.toFixed(4) + ' m²' : '—';
-      const fmtDeg = v => v != null ? v.toFixed(1) + '°' : '—';
-      const fmtN = v => v != null ? v.toFixed(0) + ' N' : '—';
+      const hasErrors   = d.errors   && d.errors.length   > 0;
+      const hasWarnings = d.warnings && d.warnings.length > 0;
+      const cardClass   = hasErrors ? 'has-error' : hasWarnings ? 'has-warn' : '';
+
+      const fmtMm  = v => v != null ? v.toFixed(1) + ' mm' : '—';
+      const fmtM2  = v => v != null ? v.toFixed(4) + ' m²' : '—';
+      const fmtDeg = v => v != null ? v.toFixed(1) + '°'   : '—';
+
+      const strut = d.chord_mm != null ? getStrutMm(d.chord_mm) : null;
 
       return `
-        <div class="card">
+        <div class="card ${cardClass}">
           <h2>${title} &mdash; ${escHtml(d.name)}</h2>
+
+          ${buildAlerts(d.warnings, d.errors)}
 
           <div class="result-cols">
 
@@ -308,6 +571,7 @@
               <table class="result-table">
                 <tr><td>Max thickness</td><td><strong>${d.max_thickness_pct}%</strong> at ${d.max_thickness_x_pct}% chord</td></tr>
                 <tr><td>Max camber</td><td><strong>${d.max_camber_pct}%</strong> at ${d.max_camber_x_pct}% chord</td></tr>
+                ${strut ? `<tr><td>Strut length</td><td><strong>${strut.strutMm.toFixed(0)} mm</strong> <span class="note">(${strut.clearMm.toFixed(0)} hull + ${strut.subMm.toFixed(0)} submerged @ ${strut.n}&times;chord)</span></td></tr>` : ''}
               </table>
               <img class="foil-plot" src="${d.plot}" alt="${escHtml(d.name)} profile" />
             </div>
@@ -327,9 +591,9 @@
               </table>
 
               <button class="btn-step" onclick="downloadStep('${foilId}')">
-                ⬇ Download STEP for Onshape
+                &#8659; Download STEP for Onshape
               </button>
-              <p class="note">Import into Onshape via <em>Insert → Import</em> or drag the file onto a Part Studio.</p>
+              <p class="note">Import into Onshape via <em>Insert &rarr; Import</em> or drag the file onto a Part Studio.</p>
             </div>
 
           </div>
@@ -338,10 +602,10 @@
 
     function escHtml(str) {
       return String(str)
-        .replace(/&/g,'&amp;')
-        .replace(/</g,'&lt;')
-        .replace(/>/g,'&gt;')
-        .replace(/"/g,'&quot;');
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
     }
 
     // -----------------------------------------------------------------------
@@ -349,21 +613,21 @@
     // -----------------------------------------------------------------------
     async function downloadStep(foilId) {
       if (!lastResults) return;
-      const d = lastResults[foilId];
+      const d   = lastResults[foilId];
       const btn = event.target;
       btn.textContent = 'Generating STEP…';
-      btn.disabled = true;
+      btn.disabled    = true;
 
       try {
         const resp = await fetch('/api/step', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
-            foil:      foilId,
-            coords:    d.coords,
-            chord_mm:  d.chord_mm,
-            span_mm:   d.span_mm,
-            name:      d.name,
+            foil:     foilId,
+            coords:   d.coords,
+            chord_mm: d.chord_mm,
+            span_mm:  d.span_mm,
+            name:     d.name,
           }),
         });
 
@@ -374,19 +638,461 @@
         }
 
         const blob = await resp.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${d.name.replace(/\s+/g,'_')}_${foilId}_foil.step`;
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href     = url;
+        a.download = `${d.name.replace(/\s+/g, '_')}_${foilId}_foil.step`;
         a.click();
         URL.revokeObjectURL(url);
       } catch(e) {
         alert('Download failed: ' + e.message);
       } finally {
-        btn.textContent = '⬇ Download STEP for Onshape';
-        btn.disabled = false;
+        btn.textContent = '&#8659; Download STEP for Onshape';
+        btn.disabled    = false;
       }
     }
+    // -----------------------------------------------------------------------
+    // 3D Visualizer
+    // -----------------------------------------------------------------------
+
+    let _vizInit = false;
+    let _vizRenderer, _vizCamera, _vizScene, _vizWorld;
+    let _vizMats = [];
+    let _vizTheta = 0.85, _vizPhi = 1.18, _vizRad = 3.8;
+    let _vizTarget, _vizDrag = null, _vizSpin = false;
+    let _vizFoils = null;
+
+    function _vizOpts() {
+      return {
+        clear: +document.getElementById('viz-clear').value,
+        boom:  +document.getElementById('viz-boom').value,
+        water: document.getElementById('viz-water').checked,
+        label: document.getElementById('viz-label').checked,
+        wire:  document.getElementById('viz-wire').checked,
+      };
+    }
+
+    function initViz() {
+      if (_vizInit) return;
+      _vizInit = true;
+
+      const cvs = document.getElementById('viz-canvas');
+      _vizRenderer = new THREE.WebGLRenderer({ canvas: cvs, antialias: true, alpha: true });
+      _vizRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+
+      _vizScene = new THREE.Scene();
+      _vizScene.fog = new THREE.FogExp2(0x0a1424, 0.05);
+
+      _vizCamera = new THREE.PerspectiveCamera(42, 1, 0.05, 200);
+      _vizTarget = new THREE.Vector3(0, -0.3, 0);
+
+      _vizScene.add(new THREE.HemisphereLight(0xbfe3ff, 0x0a1424, 0.9));
+      const kl = new THREE.DirectionalLight(0xffffff, 1.05);
+      kl.position.set(2.5, 4, 2); _vizScene.add(kl);
+      const rl = new THREE.DirectionalLight(0x66d9ff, 0.5);
+      rl.position.set(-3, 1.5, -2); _vizScene.add(rl);
+      _vizScene.add(new THREE.AmbientLight(0x33507a, 0.5));
+
+      _vizWorld = new THREE.Group();
+      _vizScene.add(_vizWorld);
+
+      cvs.addEventListener('pointerdown', e => {
+        _vizDrag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+        cvs.setPointerCapture(e.pointerId);
+      });
+      cvs.addEventListener('pointermove', e => {
+        if (!_vizDrag) return;
+        const dx = e.clientX - _vizDrag.x, dy = e.clientY - _vizDrag.y;
+        _vizDrag.x = e.clientX; _vizDrag.y = e.clientY;
+        if (_vizDrag.pan) {
+          const right = new THREE.Vector3()
+            .crossVectors(_vizCamera.up, _vizCamera.getWorldDirection(new THREE.Vector3()))
+            .normalize();
+          const k = _vizRad * 0.0016;
+          _vizTarget.addScaledVector(right, dx * k);
+          _vizTarget.addScaledVector(_vizCamera.up, dy * k);
+        } else {
+          _vizTheta -= dx * 0.005;
+          _vizPhi = Math.min(Math.PI - 0.05, Math.max(0.05, _vizPhi - dy * 0.005));
+        }
+      });
+      window.addEventListener('pointerup', () => { _vizDrag = null; });
+      cvs.addEventListener('wheel', e => {
+        e.preventDefault();
+        _vizRad = Math.min(30, Math.max(0.6, _vizRad * (1 + e.deltaY * 0.0012)));
+      }, { passive: false });
+      cvs.addEventListener('contextmenu', e => e.preventDefault());
+
+      function resizeViz() {
+        const r = cvs.getBoundingClientRect();
+        _vizRenderer.setSize(r.width, r.height, false);
+        _vizCamera.aspect = r.width / r.height || 1;
+        _vizCamera.updateProjectionMatrix();
+      }
+      window.addEventListener('resize', resizeViz);
+      resizeViz();
+
+      (function loop() {
+        requestAnimationFrame(loop);
+        if (_vizSpin) _vizTheta += 0.0026;
+        _vizCamera.position.set(
+          _vizTarget.x + _vizRad * Math.sin(_vizPhi) * Math.sin(_vizTheta),
+          _vizTarget.y + _vizRad * Math.cos(_vizPhi),
+          _vizTarget.z + _vizRad * Math.sin(_vizPhi) * Math.cos(_vizTheta)
+        );
+        _vizCamera.lookAt(_vizTarget);
+        _vizRenderer.render(_vizScene, _vizCamera);
+      })();
+
+      const cs = document.getElementById('viz-clear');
+      const bs = document.getElementById('viz-boom');
+      cs.oninput = () => {
+        document.getElementById('viz-clear-val').textContent = (+cs.value).toFixed(2) + ' m';
+        _vizRebuild();
+      };
+      bs.oninput = () => {
+        document.getElementById('viz-boom-val').textContent = (+bs.value).toFixed(2) + ' m';
+        _vizRebuild();
+      };
+      document.getElementById('viz-water').onchange = _vizRebuild;
+      document.getElementById('viz-label').onchange = _vizRebuild;
+      document.getElementById('viz-wire').onchange = () => {
+        _vizMats.forEach(m => m.wireframe = document.getElementById('viz-wire').checked);
+      };
+      document.getElementById('viz-spin').onchange = () => {
+        _vizSpin = document.getElementById('viz-spin').checked;
+      };
+    }
+
+    function _vizRebuild() {
+      if (_vizFoils) _buildVizScene(_vizFoils, _vizOpts());
+    }
+
+    function _makeVizLabel(text, color) {
+      const cv = document.createElement('canvas');
+      cv.width = 512; cv.height = 128;
+      const g = cv.getContext('2d');
+      const s = 4;
+      g.scale(s, s);
+      const midY = cv.height / s / 2; // 16
+      g.font = '600 18px monospace';
+      g.textBaseline = 'middle';
+      g.fillStyle = 'rgba(8,18,34,.9)';
+      const tw = g.measureText(text).width + 22;
+      const rx = 2, ry = midY - 13, rh = 26, rr = 6;
+      g.beginPath();
+      g.moveTo(rx + rr, ry);
+      g.arcTo(rx + tw, ry, rx + tw, ry + rh, rr);
+      g.arcTo(rx + tw, ry + rh, rx, ry + rh, rr);
+      g.arcTo(rx, ry + rh, rx, ry, rr);
+      g.arcTo(rx, ry, rx + rr, ry, rr);
+      g.closePath(); g.fill();
+      g.fillStyle = '#' + color.toString(16).padStart(6, '0');
+      g.fillText(text, rx + 11, midY);
+      const tex = new THREE.CanvasTexture(cv);
+      tex.minFilter = THREE.LinearFilter;
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+      sp.scale.set(1.25, 0.31, 1);
+      return sp;
+    }
+
+    const _VIZ_COL = { front: 0x37d6e6, rear: 0xffb347 };
+
+    function _buildVizScene(foils, opts) {
+      while (_vizWorld.children.length) _vizWorld.remove(_vizWorld.children[0]);
+      _vizMats = [];
+
+      const strutMat = new THREE.MeshStandardMaterial({ color: 0x8aa0bd, metalness: 0.55, roughness: 0.45 });
+      const boomTopY  = 0;
+      const strutDepth = 0.42;
+      const tipsZ = [];
+
+      for (const f of foils) {
+        const col = _VIZ_COL[f.role] || 0x88bbdd;
+        const mat = new THREE.MeshStandardMaterial({
+          color: col, metalness: 0.25, roughness: 0.42,
+          wireframe: opts.wire, side: THREE.DoubleSide
+        });
+        _vizMats.push(mat);
+
+        const chord = f.chord_mm / 1000;
+        const span  = f.span_mm  / 1000;
+        const aoa   = f.aoa_deg;
+        const fz    = f.role === 'front' ? -opts.boom / 2 : +opts.boom / 2;
+
+        const pts = (f.coords || []).map(([x, y]) =>
+          new THREE.Vector2((x - 0.25) * chord, y * chord)
+        );
+        if (pts.length < 3) continue;
+
+        const geo = new THREE.ExtrudeGeometry(new THREE.Shape(pts), {
+          depth: span, bevelEnabled: false, steps: 1
+        });
+        geo.translate(0, 0, -span / 2);
+        geo.computeVertexNormals();
+
+        const wing = new THREE.Mesh(geo, mat);
+        wing.rotation.y = -Math.PI / 2;
+        const pitch = new THREE.Group();
+        pitch.add(wing);
+        pitch.rotation.x = THREE.MathUtils.degToRad(aoa);
+        pitch.position.set(0, boomTopY - strutDepth, fz);
+        _vizWorld.add(pitch);
+
+        const strut = new THREE.Mesh(
+          new THREE.BoxGeometry(0.032, strutDepth, Math.max(0.05, chord * 0.45)),
+          strutMat
+        );
+        strut.position.set(0, boomTopY - strutDepth / 2, fz);
+        _vizWorld.add(strut);
+        tipsZ.push(fz);
+
+        if (opts.label) {
+          const lab = _makeVizLabel(
+            `${f.role.toUpperCase()}  b=${span.toFixed(2)}m  c=${(chord * 1000).toFixed(0)}mm  α=${aoa.toFixed(1)}°`,
+            col
+          );
+          lab.position.set(span / 2 + 0.22, boomTopY - strutDepth + 0.22, fz);
+          _vizWorld.add(lab);
+        }
+      }
+
+      if (tipsZ.length >= 2) {
+        const z0 = Math.min(...tipsZ), z1 = Math.max(...tipsZ);
+        const boomLen = z1 - z0;
+        const boomCZ  = (z0 + z1) / 2;
+
+        const boom = new THREE.Mesh(new THREE.BoxGeometry(0.052, 0.052, boomLen), strutMat);
+        boom.position.set(0, boomTopY, boomCZ);
+        _vizWorld.add(boom);
+
+        _buildHullPrimitive(boomLen, boomCZ, boomTopY);
+      }
+
+      const maxSpan = Math.max(...foils.map(f => (f.span_mm || 1000) / 1000), 1);
+      const ws = maxSpan * 3.2;
+
+      const waterMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(ws, ws),
+        new THREE.MeshStandardMaterial({
+          color: 0x1fb6c9, transparent: true, opacity: 0.18,
+          metalness: 0.1, roughness: 0.3, side: THREE.DoubleSide
+        })
+      );
+      waterMesh.rotation.x = -Math.PI / 2;
+      waterMesh.position.y = -opts.clear;
+      waterMesh.visible = opts.water;
+      _vizWorld.add(waterMesh);
+
+      const grid = new THREE.GridHelper(ws, 42, 0x2f6e85, 0x1a3b4a);
+      grid.position.y = -opts.clear + 0.001;
+      grid.material.opacity = 0.32;
+      grid.material.transparent = true;
+      grid.visible = opts.water;
+      _vizWorld.add(grid);
+
+      _vizTarget.set(0, -strutDepth * 0.5, 0);
+    }
+
+    function _buildHullPrimitive(boomLen, boomCZ, boomTopY) {
+      const hullMat = new THREE.MeshStandardMaterial({ color: 0x1c3a5e, metalness: 0.3, roughness: 0.6 });
+      const deckMat = new THREE.MeshStandardMaterial({ color: 0x263f68, metalness: 0.2, roughness: 0.7 });
+
+      const W = 0.27, H = 0.16;
+      const midZ = boomLen * 0.58;
+      const bowZ  = boomLen * 0.28;
+      const stnZ  = boomLen * 0.18;
+      const topY  = boomTopY + H / 2;
+
+      const body = new THREE.Mesh(new THREE.BoxGeometry(W, H, midZ), hullMat);
+      body.position.set(0, topY, boomCZ);
+      _vizWorld.add(body);
+
+      // Bow — CylinderGeometry tip at +Y local; rotation.x=-π/2 maps +Y→-Z (forward/bow)
+      const bow = new THREE.Mesh(new THREE.CylinderGeometry(0, W / 2, bowZ, 8, 1), hullMat);
+      bow.rotation.x = -Math.PI / 2;
+      bow.position.set(0, topY, boomCZ - midZ / 2 - bowZ / 2);
+      _vizWorld.add(bow);
+
+      // Stern — rotation.x=+π/2 maps +Y→+Z (rear)
+      const stern = new THREE.Mesh(new THREE.CylinderGeometry(0, W * 0.42, stnZ, 8, 1), hullMat);
+      stern.rotation.x = Math.PI / 2;
+      stern.position.set(0, topY, boomCZ + midZ / 2 + stnZ / 2);
+      _vizWorld.add(stern);
+
+      // Cockpit deck
+      const dk = new THREE.Mesh(new THREE.BoxGeometry(W * 0.7, H * 0.22, midZ * 0.48), deckMat);
+      dk.position.set(0, boomTopY + H + H * 0.11, boomCZ);
+      _vizWorld.add(dk);
+    }
+
+    // -----------------------------------------------------------------------
+    // Toast helper
+    // -----------------------------------------------------------------------
+    let _toastTimer = null;
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('toast-show');
+      clearTimeout(_toastTimer);
+      _toastTimer = setTimeout(() => el.classList.remove('toast-show'), 2800);
+    }
+
+    // -----------------------------------------------------------------------
+    // Settings export / import
+    // -----------------------------------------------------------------------
+    function exportSettings() {
+      const val     = id => document.getElementById(id).value;
+      const checked = name => document.querySelector(`input[name="${name}"]:checked`).value;
+
+      const s = {
+        version:        1,
+        front_dat:      val('front-dat'),
+        rear_mode:      checked('rear-mode'),
+        rear_dat:       val('rear-dat'),
+        weight_val:     val('weight-val'),
+        weight_unit:    val('weight-unit'),
+        v_takeoff_val:  val('v-takeoff-val'),
+        v_takeoff_unit: val('v-takeoff-unit'),
+        water_type:     val('water-type'),
+        rho_custom:     val('rho-custom'),
+        load_split:          val('load-split'),
+        hull_clearance_val:  val('hull-clearance-val'),
+        hull_clearance_unit: val('hull-clearance-unit'),
+        submergence_n:       val('submergence-n'),
+        front_sizing:   checked('front-sizing'),
+        max_t_front:    val('max-t-front'),
+        chord_front:    val('chord-front'),
+        rear_sizing:    checked('rear-sizing'),
+        max_t_rear:     val('max-t-rear'),
+        chord_rear:     val('chord-rear'),
+        cl_front:       val('cl-front'),
+        cl_rear:        val('cl-rear'),
+        oswald_e:       val('oswald-e'),
+        front_min_span:  val('front-min-span'),
+        front_max_span:  val('front-max-span'),
+        front_min_chord: val('front-min-chord'),
+        front_max_chord: val('front-max-chord'),
+        front_min_ar:    val('front-min-ar'),
+        front_max_ar:    val('front-max-ar'),
+        rear_min_span:   val('rear-min-span'),
+        rear_max_span:   val('rear-max-span'),
+        rear_min_chord:  val('rear-min-chord'),
+        rear_max_chord:  val('rear-max-chord'),
+        rear_min_ar:     val('rear-min-ar'),
+        rear_max_ar:     val('rear-max-ar'),
+      };
+
+      const blob = new Blob([JSON.stringify(s, null, 2)], { type: 'application/json' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = 'hydrofoil-settings.json';
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('✓ Settings exported successfully');
+    }
+
+    function importSettings(file) {
+      const reader = new FileReader();
+      reader.onload = e => {
+        let s;
+        try { s = JSON.parse(e.target.result); }
+        catch { alert('Could not parse file — make sure it is a valid JSON settings file.'); return; }
+        if (!s || s.version !== 1) { alert('Unrecognized settings format (expected version 1).'); return; }
+
+        const set = (id, v) => {
+          if (v !== undefined && v !== null) document.getElementById(id).value = v;
+          else if (v === '' || v === null) document.getElementById(id).value = '';
+        };
+        const setRadio = (name, v) => {
+          const el = document.querySelector(`input[name="${name}"][value="${v}"]`);
+          if (el) el.checked = true;
+        };
+
+        set('front-dat', s.front_dat);
+        set('rear-dat',  s.rear_dat);
+        setRadio('rear-mode', s.rear_mode);
+        document.getElementById('rear-dat-wrap').style.display =
+          s.rear_mode === 'different' ? 'block' : 'none';
+
+        set('weight-val',    s.weight_val);
+        set('weight-unit',   s.weight_unit);
+        set('v-takeoff-val', s.v_takeoff_val);
+        set('v-takeoff-unit',s.v_takeoff_unit);
+        set('water-type',    s.water_type);
+        set('rho-custom',    s.rho_custom);
+        document.getElementById('rho-custom-wrap').style.display =
+          s.water_type === 'custom' ? 'block' : 'none';
+
+        set('load-split',          s.load_split);
+        set('hull-clearance-val',  s.hull_clearance_val);
+        set('hull-clearance-unit', s.hull_clearance_unit);
+        set('submergence-n',       s.submergence_n);
+        const frontPct = parseInt(s.load_split) || 0;
+        document.getElementById('rear-share-note').innerHTML =
+          `Rear foil carries <strong>${100 - frontPct}%</strong>`;
+
+        setRadio('front-sizing', s.front_sizing);
+        document.getElementById('front-thickness-field').style.display =
+          s.front_sizing === 'thickness' ? 'block' : 'none';
+        document.getElementById('front-chord-field').style.display =
+          s.front_sizing === 'chord' ? 'block' : 'none';
+        set('max-t-front', s.max_t_front);
+        set('chord-front', s.chord_front);
+
+        setRadio('rear-sizing', s.rear_sizing);
+        document.getElementById('rear-thickness-field').style.display =
+          s.rear_sizing === 'thickness' ? 'block' : 'none';
+        document.getElementById('rear-chord-field').style.display =
+          s.rear_sizing === 'chord' ? 'block' : 'none';
+        set('max-t-rear', s.max_t_rear);
+        set('chord-rear', s.chord_rear);
+
+        set('cl-front',   s.cl_front);
+        set('cl-rear',    s.cl_rear);
+        set('oswald-e',   s.oswald_e);
+
+        set('front-min-span',  s.front_min_span);
+        set('front-max-span',  s.front_max_span);
+        set('front-min-chord', s.front_min_chord);
+        set('front-max-chord', s.front_max_chord);
+        set('front-min-ar',    s.front_min_ar);
+        set('front-max-ar',    s.front_max_ar);
+        set('rear-min-span',   s.rear_min_span);
+        set('rear-max-span',   s.rear_max_span);
+        set('rear-min-chord',  s.rear_min_chord);
+        set('rear-max-chord',  s.rear_max_chord);
+        set('rear-min-ar',     s.rear_min_ar);
+        set('rear-max-ar',     s.rear_max_ar);
+        showToast('✓ Settings imported successfully');
+      };
+      reader.readAsText(file);
+    }
+
+    document.getElementById('export-settings-btn').addEventListener('click', exportSettings);
+
+    document.getElementById('import-settings-btn').addEventListener('click', () => {
+      document.getElementById('import-settings-input').click();
+    });
+
+    document.getElementById('import-settings-input').addEventListener('change', function() {
+      if (this.files && this.files[0]) {
+        importSettings(this.files[0]);
+        this.value = '';
+      }
+    });
+
+    function showViz(data) {
+      document.getElementById('viz-panel').style.display = '';
+      if (!_vizInit) initViz();
+      _vizFoils = [
+        { role: 'front', ...data.front },
+        { role: 'rear',  ...data.rear  },
+      ];
+      _buildVizScene(_vizFoils, _vizOpts());
+    }
+
   </script>
 </body>
 </html>
