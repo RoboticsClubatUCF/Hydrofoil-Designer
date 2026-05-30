@@ -1,6 +1,6 @@
 # PEP27 Hydrofoil Designer
 
-A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat` file, enter your craft's design parameters, and receive a full aerodynamic sizing report plus a **STEP file** ready to import into any major 3D modeling software.
+A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat` file, enter your craft's design parameters, and receive a full aerodynamic sizing report, a **STEP file** ready to import into any major 3D modeling software, and an interactive **3D assembly preview**.
 
 ---
 
@@ -10,8 +10,15 @@ A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat`
 - Automatically extracts **max thickness** and **max camber** with chord locations
 - Calculates chord, span, planform area, aspect ratio, lift coefficient, and angle of attack using **Prandtl's lifting-line theory**
 - Supports independent front and rear foil profiles (or use the same profile for both)
-- Generates a **STEP solid** of the 3D foil geometry for direct import into Onshape
-- Unit-flexible inputs: N / lbs / kg, km/h / m/s / knots, fresh / brackish / salt water
+- Two sizing modes per foil: **thickness-constrained** (drives chord from a max thickness limit) or **direct chord**
+- Optional advanced constraints: min/max span, chord, and aspect ratio per foil
+- **Error and warning system** — constraint violations and marginal conditions reported with actionable fix suggestions
+- **Strut length** calculated dynamically from hull clearance + submergence factor × chord
+- Generates a **STEP solid** of each foil for direct import into CAD software
+- **Interactive 3D assembly preview** — foils, struts, and hull rendered in-browser with drag/zoom controls
+- **Settings export/import** — save and restore all form values as a JSON file
+- Light and **dark mode** support
+- Unit-flexible inputs: N / lbs / kg, km/h / m/s / knots, fresh / brackish / salt / custom water density
 
 ---
 
@@ -26,7 +33,7 @@ A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat`
 
 ```bash
 # Clone or copy the project folder, then:
-cd HydrofoilMaker
+cd Hydrofoil-Designer
 
 # Create a virtual environment
 python -m venv .venv
@@ -63,7 +70,7 @@ gunicorn -w 4 -b 0.0.0.0:5000 app:app
 ### 1. Paste a `.dat` profile
 
 Paste the raw text of a standard airfoil coordinate file into the **Front Foil Profile** box.
-An example NACA 4418 file is included in `example_data/naca4418.dat` — click **"Load NACA 4418 example"** to pre-fill it.
+An example NACA 4418 file is included — click **"Load NACA 4418 example"** to pre-fill it.
 
 **Expected format (Selig):**
 
@@ -95,23 +102,46 @@ Choose **"Same profile as front"** or **"Different profile"** and paste a second
 | Takeoff speed | Speed at which the hull leaves the water |
 | Water type | Sets fluid density (fresh / brackish / salt / custom) |
 | Front foil load share | Percentage of total lift carried by the front foil |
-| Max front / rear thickness | Structural thickness limit — drives chord length |
+| Target hull clearance | Desired ride height above the waterline |
+| Submergence factor *n* | Multiplier for chord depth in strut length calculation (default 1.5) |
+| Sizing mode | Thickness limit (drives chord) or direct chord input, per foil |
+| Max thickness / Chord | Structural thickness limit or explicit chord length, per foil |
 | Front / rear C_L | Target lift coefficient for each foil |
 | Oswald efficiency *e* | Planform efficiency factor (default 0.9) |
 
+**Advanced Constraints** (optional, collapsible):
+
+Each foil supports optional min/max bounds on span, chord, and aspect ratio. Leave blank to unconstrain.
+
 ### 4. Calculate
 
-Click **Calculate & Preview**. The tool displays:
+Click **Calculate & Preview**. The tool displays for each foil:
 
-- Profile summary (thickness %, camber %, chord locations)
+- Profile summary (thickness %, camber %, chord locations, strut length)
 - Airfoil shape plot
-- Full design table (chord, span, area, AR, AoA, lift slope)
-- **Download STEP** button for each foil
+- Full design table (chord, span, area, AR, AoA, lift slope, zero-lift angle, dynamic pressure)
+- Any **errors** (constraint violations, stall risk) with fix suggestions
+- Any **warnings** (marginal but feasible conditions) with suggestions
+- **Download STEP** button
 
-### 5. Import into Onshape
+### 5. 3D Assembly Preview
 
-In a Part Studio: **Insert → Import** and select the downloaded `.step` file.
+An interactive 3D scene appears below the results showing the full hydrofoil assembly — front and rear foils, struts, and hull. Controls:
+
+- **Left-drag** — orbit
+- **Scroll** — zoom
+- **Right-drag / Shift-drag** — pan
+
+Sliders and toggles in the sidebar let you adjust hull clearance and foil separation in real time, and toggle the waterline plane, labels, wireframe, and auto-rotate.
+
+### 6. Import into your CAD software
+
+Open or import the downloaded `.step` file in any 3D modeling software that supports STEP (Fusion 360, FreeCAD, SolidWorks, Onshape, etc.).
 The foil appears as a solid body with the correct cross-section and full span.
+
+### 7. Settings export / import
+
+Use **Export Settings** to save all current form values as a JSON file, and **Import Settings** to restore a previously saved session.
 
 ---
 
@@ -129,6 +159,8 @@ span = S / chord
 a = a₀ / (1 + 57.3·a₀ / (π·e·AR))            (Prandtl lifting-line, 3D slope)
 
 α = CL / a + α_L=0                             (angle of attack)
+
+strut_length = hull_clearance + n × chord      (strut sizing)
 ```
 
 Where `a₀ ≈ 0.10966 /°` (thin airfoil theory, 2π per radian) and `α_L=0 ≈ −camber%` degrees.
@@ -138,16 +170,16 @@ Where `a₀ ≈ 0.10966 /°` (thin airfoil theory, 2π per radian) and `α_L=0 �
 ## Project Structure
 
 ```
-HydrofoilMaker/
-├── app.py              # Flask routes
+Hydrofoil-Designer/
+├── app.py              # Flask routes: GET /, POST /api/calculate, POST /api/step
 ├── dat_parser.py       # .dat parsing and profile parameter extraction
-├── foil_math.py        # Aerodynamic calculations
-├── step_generator.py   # CadQuery: 2D profile → 3D STEP file
+├── foil_math.py        # Aerodynamic calculations and constraint checks
+├── step_generator.py   # OCP: 2D profile → 3D STEP file
 ├── requirements.txt
 ├── templates/
-│   └── index.html      # Single-page UI
+│   └── index.html      # Single-page UI (vanilla HTML/CSS/JS + Three.js)
 ├── static/
-│   └── style.css
+│   └── style.css       # Navy/blue maritime theme, light/dark mode
 └── example_data/
     └── naca4418.dat    # NACA 4418 example profile
 ```
@@ -156,12 +188,10 @@ HydrofoilMaker/
 
 ## Verification Baseline
 
-Using the PEP27 design spec (890 N craft, 70/30 load split, 3.61 m/s takeoff, ρ = 1 000 kg/m³, 30 mm max front thickness, C_L = 0.8, NACA 4418):
+Using the PEP27 design spec (890 N craft, 70/30 load split, 3.61 m/s takeoff, ρ = 1010 kg/m³ brackish, 30 mm max front thickness, C_L = 0.8, NACA 4418):
 
-| Output | Expected | Tool result |
-|---|---|---|
-| Chord | ~167 mm | 166.5 mm |
-| Span | ~720 mm | 717.9 mm |
-| Aspect ratio | ~4.3 | 4.31 |
-| Lift slope | ~0.072 /° | 0.07237 /° |
-| Angle of attack | ~7.1° | 7.1° |
+| Output | Expected |
+|---|---|
+| Chord | 166.7 mm |
+| Span | 710.0 mm |
+| Angle of attack | 7.1° |
