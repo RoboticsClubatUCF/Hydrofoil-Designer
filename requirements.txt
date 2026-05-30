@@ -1,0 +1,4 @@
+flask>=2.3
+numpy>=1.24
+matplotlib>=3.7
+cadquery>=2.3
