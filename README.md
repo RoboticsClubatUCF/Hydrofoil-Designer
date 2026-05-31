@@ -172,17 +172,18 @@ docker image ls pep27-openfoam
    | Low | ~60×40 cells | ~2 min |
    | Medium | ~120×80 cells | ~5 min |
    | High | ~200×120 cells | ~15 min |
-5. Click **Run CFD**
+5. (Optional) Expand **Hardware Settings** to adjust CPU core count (default: 6) and maximum timeout.
+6. Click **Run CFD**
 
-A progress bar tracks each solver stage: STL generation → blockMesh → snappyHexMesh → simpleFoam → post-processing.
+A progress bar tracks each solver stage: STL generation → blockMesh → snappyHexMesh → checkMesh → decomposePar → simpleFoam → reconstructPar → post-processing.
 
 #### Results
 
 - **Force badges** — C_L, C_D, L/D ratio, and solver iteration count
 - **Field selector** — switch between Pressure (Cp) and Velocity magnitude
-- **2D color-map canvas** (left) — animated particle tracers show the flow; foil outline overlaid
-- **3D streamline scene** (right) — foil colored by Cp, streamlines across multiple span slices; drag to orbit, auto-rotates
-- **Convergence note** — final residual; a yellow warning banner appears if the solver diverged (results are still shown but may be less accurate)
+- **2D color-map canvas** (left) — animated particle tracers show the flow; solid foil masking with pressure-aware outline; HiDPI-corrected rendering
+- **3D streamline scene** (right) — foil colored by Cp, RK2-integrated streamlines (2% chord step) with surface collision detection; drag to orbit (auto-rotate disabled for user control)
+- **Convergence note** — max initial residual tracker; a yellow warning banner appears if the solver diverged or produced non-physical values (C_L > 100, NaN, Inf) — a clean "Diverged" status is shown rather than bad data
 
 #### Troubleshooting
 
@@ -190,10 +191,11 @@ A progress bar tracks each solver stage: STL generation → blockMesh → snappy
 |---|---|---|
 | "Docker is not running" error | Docker Desktop not started | Start Docker Desktop and wait for the whale icon |
 | "Docker image not found" error | Image not built yet | Run `docker build -t pep27-openfoam .` from `Hydrofoil-Designer/` |
-| Diverged solver warning | High AoA or aggressive profile | Try Low resolution first; reduce AoA if divergence persists |
+| "Diverged" status badge | Non-physical result (high AoA, coarse mesh) | Try Low resolution first; reduce AoA if divergence persists |
+| Slow runs on low-core machines | Default core count too high | Open Hardware Settings and lower the CPU core count |
 | No CFD panel visible | Calculate hasn't been run yet | Click Calculate & Preview first |
 
-**CFD method:** simpleFoam (steady-state incompressible RANS), k-ω SST turbulence model, snappyHexMesh body-fitted mesh. The airfoil geometry is rotated by the operating AoA so the freestream stays horizontal. The domain spans −5c to +15c in X and ±3c in Y with `empty` patches in Z for a true 2D simulation.
+**CFD method:** simpleFoam (steady-state incompressible RANS), k-ω SST turbulence model, snappyHexMesh body-fitted mesh. The airfoil geometry is rotated by the operating AoA so the freestream stays horizontal. The domain spans −5c to +15c in X and ±3c in Y, using a thin 3D slab with `symmetry` patches in Z for numerical stability. The simulation runs in parallel across multiple cores (default 6) using `mpirun`; results are reconstructed before post-processing. Pressure solver: GAMG; momentum: pure upwind; relaxation factors: p=0.3, U/k/ω=0.7.
 
 ### 7. Import into your CAD software
 

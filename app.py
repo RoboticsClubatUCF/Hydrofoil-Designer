@@ -314,6 +314,8 @@ def start_cfd():
         "nu":         _mu_from_rho(rho) / rho,
         "foil":       data["foil"],
         "resolution": resolution,
+        "n_cores":    int(data.get("n_cores", 6)),
+        "timeout_s":  int(data.get("timeout_s", 1200)),
     }
 
     job_id = submit_job(params)

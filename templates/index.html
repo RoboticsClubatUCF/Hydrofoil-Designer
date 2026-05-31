@@ -315,7 +315,7 @@
       <!-- Launch card -->
       <div class="card" id="cfd-launch-card">
         <h2>CFD Simulation &mdash; OpenFOAM (simpleFoam, k-&omega; SST)</h2>
-        <p class="note">Requires Docker Desktop running with image <code>openfoam/openfoam12-default</code>. Runtime: Low ~2 min &middot; Medium ~5 min &middot; High ~15 min.</p>
+        <p class="note">Requires Docker Desktop running with image <code>pep27-openfoam</code>. Runtime: Low ~2 min &middot; Medium ~5 min &middot; High ~15 min.</p>
         <div class="cfd-controls">
           <label>Foil to analyse
             <select id="cfd-foil-select">
@@ -324,15 +324,35 @@
             </select>
           </label>
           <div class="cfd-resolution-wrap">
-            <label>Mesh resolution
-              <div class="cfd-slider-row">
-                <input type="range" id="cfd-resolution" min="1" max="3" step="1" value="1" />
-                <span id="cfd-resolution-label" class="cfd-res-label">Low (~80k cells, ~2 min)</span>
-              </div>
-            </label>
+            <div class="cfd-res-header">
+              <label for="cfd-resolution">Mesh resolution</label>
+              <span id="cfd-resolution-label" class="cfd-res-label">Low (~80k cells, ~2 min)</span>
+            </div>
+            <input type="range" id="cfd-resolution" min="1" max="3" step="1" value="1" />
             <div class="cfd-res-marks"><span>Low</span><span>Medium</span><span>High</span></div>
           </div>
         </div>
+
+        <div class="cfd-hw-settings-toggle">
+          <button id="cfd-hw-toggle-btn" class="btn-link">⚙ Hardware & Performance Settings</button>
+        </div>
+        
+        <div id="cfd-hw-settings-panel" class="cfd-hw-panel" style="display:none;">
+          <div class="cfd-input-row">
+            <label class="cfd-input-group">
+              CPU Cores
+              <input type="number" id="cfd-cores" value="6" min="1" max="64" />
+              <span class="note">Parallel processes</span>
+            </label>
+            <label class="cfd-input-group">
+              Timeout (min)
+              <input type="number" id="cfd-timeout" value="20" min="5" max="120" />
+              <span class="note">Max run time</span>
+            </label>
+          </div>
+          <p class="note" style="margin-top:0.5rem;">Higher cores speed up 'Medium/High' resolution. Adjust timeout if 'High' jobs fail early.</p>
+        </div>
+
         <button id="cfd-run-btn" class="btn-primary" style="margin-top:1rem;">Run CFD</button>
         <p id="cfd-launch-error" class="error-msg" style="display:none; margin-top:0.5rem;"></p>
       </div>
@@ -1445,6 +1465,12 @@
       document.getElementById('cfd-resolution-label').textContent = _CFD_RES_LABELS[this.value];
     });
 
+    // CFD hardware settings toggle
+    document.getElementById('cfd-hw-toggle-btn').addEventListener('click', () => {
+      const p = document.getElementById('cfd-hw-settings-panel');
+      p.style.display = p.style.display === 'none' ? 'block' : 'none';
+    });
+
     // -----------------------------------------------------------------------
     // CFD — launch
     // -----------------------------------------------------------------------
@@ -1454,6 +1480,9 @@
       const foilId   = document.getElementById('cfd-foil-select').value;
       const foilData = lastResults[foilId];
       const resolution = parseInt(document.getElementById('cfd-resolution').value);
+      
+      const nCores  = parseInt(document.getElementById('cfd-cores').value) || 1;
+      const timeout = (parseInt(document.getElementById('cfd-timeout').value) || 20) * 60;
 
       document.getElementById('cfd-launch-error').style.display = 'none';
       document.getElementById('cfd-launch-card').style.display   = 'none';
@@ -1475,6 +1504,8 @@
             rho:        _lastRho,
             foil:       foilId,
             resolution: resolution,
+            n_cores:    nCores,
+            timeout_s:  timeout,
           }),
         });
         const json = await resp.json();
@@ -1621,7 +1652,7 @@
 
       const dpr  = window.devicePixelRatio || 1;
       const cssW = canvas.clientWidth  || 500;
-      const cssH = canvas.clientHeight || 500;
+      const cssH = canvas.clientHeight || 400;
       canvas.width  = cssW * dpr;
       canvas.height = cssH * dpr;
       const ctx = canvas.getContext('2d');
@@ -1644,22 +1675,29 @@
         if (v == null || !isFinite(v)) continue;
         if (v < fMin) fMin = v; if (v > fMax) fMax = v;
       }
+      if (fMax <= fMin) fMax = fMin + 1;
 
-      // Render field to ImageData (static, re-rendered each field change)
-      const imgData = ctx.createImageData(cssW, cssH);
-      for (let py = 0; py < cssH; py++) {
-        for (let px = 0; px < cssW; px++) {
-          const dx = grid.x_min + (px - offX) / scale;
-          const dy = grid.y_max - (py - offY) / scale;
-          if (dx < grid.x_min || dx > grid.x_max || dy < grid.y_min || dy > grid.y_max) continue;
+      // Render field to an offscreen canvas at fixed resolution for speed and DPI independence
+      const offCvs = document.createElement('canvas');
+      const offW = 320, offH = 200;
+      offCvs.width = offW; offCvs.height = offH;
+      const octx = offCvs.getContext('2d');
+      const oImg = octx.createImageData(offW, offH);
+      for (let py = 0; py < offH; py++) {
+        for (let px = 0; px < offW; px++) {
+          const dx = grid.x_min + (px / (offW-1)) * domW;
+          const dy = grid.y_max - (py / (offH-1)) * domH;
           const val = _bilinearInterpGrid(fieldData, grid, dx, dy);
-          if (val == null || !isFinite(val)) continue;
-          const [rr,gg,bb] = _fieldColor(val, fMin, fMax, fieldKey);
-          const idx = (py * cssW + px) * 4;
-          imgData.data[idx]=rr; imgData.data[idx+1]=gg;
-          imgData.data[idx+2]=bb; imgData.data[idx+3]=230;
+          const idx = (py * offW + px) * 4;
+          if (val == null) {
+             oImg.data[idx+3] = 0;
+          } else {
+             const [rr,gg,bb] = _fieldColor(val, fMin, fMax, fieldKey);
+             oImg.data[idx]=rr; oImg.data[idx+1]=gg; oImg.data[idx+2]=bb; oImg.data[idx+3]=220;
+          }
         }
       }
+      octx.putImageData(oImg, 0, 0);
 
       function _drawFoilOutline() {
         const sf = r.foil_surface;
@@ -1670,10 +1708,10 @@
           i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
         }
         ctx.closePath();
-        ctx.fillStyle = 'rgba(20,30,50,0.95)';
+        ctx.fillStyle = 'rgba(15,25,45,0.98)';
         ctx.fill();
-        ctx.strokeStyle = 'rgba(160,200,255,0.7)';
-        ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.strokeStyle = 'rgba(160,200,255,0.8)';
+        ctx.lineWidth = 1.8; ctx.stroke();
       }
 
       function _drawColorBar() {
@@ -1686,7 +1724,7 @@
         } else {
           grad.addColorStop(0, 'rgb(255,255,255)');
           grad.addColorStop(0.5, 'rgb(0,210,255)');
-          grad.addColorStop(1, 'rgb(0,0,100)');
+          grad.addColorStop(1, 'rgb(0,20,80)');
         }
         ctx.fillStyle = grad;
         ctx.fillRect(cbX, PAD, 14, drawH);
@@ -1701,17 +1739,29 @@
         ctx.fillText(fMin.toFixed(2), cbX + 17, PAD + drawH);
       }
 
-      // Seed particles using velocity field
-      const CFD_N_PARTICLES = 120;
-      const CFD_TRAIL = 16;
-      const CFD_DT    = 0.012 / Math.max(r.v_ms || 1, 0.1);
+      // Particles
+      const CFD_N_PARTICLES = 140;
+      const CFD_TRAIL = 18;
+      const CFD_DT    = 0.008 / Math.max(r.v_ms || 1, 0.1);
+
+      function _isInsideFoil(x, y) {
+          const sf = r.foil_surface;
+          if (!sf) return false;
+          let inside = false;
+          for (let i = 0, j = sf.x.length - 1; i < sf.x.length; j = i++) {
+              if (((sf.y[i] > y) !== (sf.y[j] > y)) &&
+                  (x < (sf.x[j] - sf.x[i]) * (y - sf.y[i]) / (sf.y[j] - sf.y[i]) + sf.x[i])) {
+                  inside = !inside;
+              }
+          }
+          return inside;
+      }
 
       function _spawnCfdParticle() {
-        for (let i = 0; i < 15; i++) {
-          const x = grid.x_min + Math.random() * 0.05;
-          const y = grid.y_min + Math.random() * (grid.y_max - grid.y_min);
-          const ux = _bilinearInterpGrid(r.velocity_x, grid, x, y);
-          if (ux !== null) return { x, y, history: [] };
+        for (let i = 0; i < 20; i++) {
+          const x = grid.x_min + Math.random() * 0.1;
+          const y = grid.y_min + Math.random() * domH;
+          if (!_isInsideFoil(x, y)) return { x, y, history: [] };
         }
         return { x: grid.x_min, y: 0, history: [] };
       }
@@ -1719,7 +1769,7 @@
       _cfdParticles2D = [];
       if (showParts) {
         for (let k = 0; k < CFD_N_PARTICLES; k++) {
-          const y0 = grid.y_min + ((k + 0.5) / CFD_N_PARTICLES) * (grid.y_max - grid.y_min);
+          const y0 = grid.y_min + ((k + 0.5) / CFD_N_PARTICLES) * domH;
           _cfdParticles2D.push({ x: grid.x_min + Math.random()*0.1, y: y0, history: [] });
         }
       }
@@ -1728,7 +1778,10 @@
         ctx.clearRect(0, 0, cssW, cssH);
         ctx.fillStyle = '#060e1c';
         ctx.fillRect(0, 0, cssW, cssH);
-        ctx.putImageData(imgData, 0, 0);
+        
+        // Draw background field scaled — must use scale*dom dimensions, not drawW/drawH,
+        // so the heatmap and foil outline use the same coordinate mapping.
+        ctx.drawImage(offCvs, offX, offY, scale * domW, scale * domH);
 
         _drawFoilOutline();
         _drawColorBar();
@@ -1739,11 +1792,14 @@
             const uy = _bilinearInterpGrid(r.velocity_y, grid, p.x, p.y) || 0;
             p.history.push([p.x, p.y]);
             if (p.history.length > CFD_TRAIL) p.history.shift();
-            const spd = Math.sqrt(ux*ux + uy*uy) || 1;
-            p.x += (ux/spd) * CFD_DT * (r.v_ms || 1) * 0.3;
-            p.y += (uy/spd) * CFD_DT * (r.v_ms || 1) * 0.3;
+            
+            const spd = Math.sqrt(ux*ux + uy*uy) || 1e-6;
+            const step = CFD_DT * (r.v_ms || 1) * 0.4;
+            p.x += (ux/spd) * step;
+            p.y += (uy/spd) * step;
+            
             const escaped = p.x > grid.x_max || p.x < grid.x_min ||
-                            p.y > grid.y_max || p.y < grid.y_min;
+                            p.y > grid.y_max || p.y < grid.y_min || _isInsideFoil(p.x, p.y);
             if (escaped) {
               const np = _spawnCfdParticle();
               p.x = np.x; p.y = np.y; p.history = [];
@@ -1753,13 +1809,13 @@
               ctx.beginPath();
               ctx.moveTo(toX(p.history[i-1][0]), toY(p.history[i-1][1]));
               ctx.lineTo(toX(p.history[i][0]),   toY(p.history[i][1]));
-              ctx.strokeStyle = `rgba(80,210,255,${(i/len*0.8).toFixed(2)})`;
-              ctx.lineWidth = 1.1; ctx.stroke();
+              ctx.strokeStyle = `rgba(100,220,255,${(i/len*0.8).toFixed(2)})`;
+              ctx.lineWidth = 1.2; ctx.stroke();
             }
             if (len > 0) {
               ctx.beginPath();
-              ctx.arc(toX(p.x), toY(p.y), 1.5, 0, 2*Math.PI);
-              ctx.fillStyle = 'rgba(140,235,255,0.9)'; ctx.fill();
+              ctx.arc(toX(p.x), toY(p.y), 1.6, 0, 2*Math.PI);
+              ctx.fillStyle = 'rgba(160,240,255,0.9)'; ctx.fill();
             }
           }
         }
@@ -1776,22 +1832,46 @@
     function _computeStreamlines3D(r, nSeeds) {
       const grid   = r.grid;
       const lines  = [];
-      const MAX_STEPS = 280;
-      const DT     = 0.08;  // normalised chord units per step
+      const MAX_STEPS = 400;
+      const DT     = 0.02;  // smaller step for smoother lines
+
+      function _isInsideFoil(x, y) {
+          const sf = r.foil_surface;
+          if (!sf) return false;
+          let inside = false;
+          for (let i = 0, j = sf.x.length - 1; i < sf.x.length; j = i++) {
+              if (((sf.y[i] > y) !== (sf.y[j] > y)) &&
+                  (x < (sf.x[j] - sf.x[i]) * (y - sf.y[i]) / (sf.y[j] - sf.y[i]) + sf.x[i])) {
+                  inside = !inside;
+              }
+          }
+          return inside;
+      }
 
       for (let s = 0; s < nSeeds; s++) {
         const y0 = grid.y_min + (s + 0.5) / nSeeds * (grid.y_max - grid.y_min);
-        let x = grid.x_min + 0.02, y = y0;
+        let x = grid.x_min + 0.01, y = y0;
+        if (_isInsideFoil(x, y)) continue;
         const pts = [[x, y]];
 
         for (let step = 0; step < MAX_STEPS; step++) {
-          const ux = _bilinearInterpGrid(r.velocity_x, grid, x, y);
-          const uy = _bilinearInterpGrid(r.velocity_y, grid, x, y);
-          if (ux === null) break;
-          const spd = Math.sqrt(ux*ux + uy*uy) || 1;
-          x += (ux/spd) * DT;
-          y += (uy/spd) * DT;
-          if (x > grid.x_max || x < grid.x_min || y > grid.y_max || y < grid.y_min) break;
+          // RK2 integration
+          const ux1 = _bilinearInterpGrid(r.velocity_x, grid, x, y);
+          const uy1 = _bilinearInterpGrid(r.velocity_y, grid, x, y);
+          if (ux1 === null) break;
+          const s1 = Math.sqrt(ux1*ux1 + uy1*uy1) || 1e-6;
+          
+          const x2 = x + (ux1/s1) * DT;
+          const y2 = y + (uy1/s1) * DT;
+          const ux2 = _bilinearInterpGrid(r.velocity_x, grid, x2, y2);
+          const uy2 = _bilinearInterpGrid(r.velocity_y, grid, x2, y2);
+          if (ux2 === null) break;
+          const s2 = Math.sqrt(ux2*ux2 + uy2*uy2) || 1e-6;
+          
+          x += 0.5 * (ux1/s1 + ux2/s2) * DT;
+          y += 0.5 * (uy1/s1 + uy2/s2) * DT;
+          
+          if (x > grid.x_max || x < grid.x_min || y > grid.y_max || y < grid.y_min || _isInsideFoil(x, y)) break;
           pts.push([x, y]);
         }
         if (pts.length >= 3) lines.push(pts);
@@ -1881,7 +1961,7 @@
         for (let zi = 0; zi < nSpanLines; zi++) {
           const zOff = (zi / (nSpanLines-1) - 0.5) * vizSpan_m;
           const pts3D = sl.map(([x,y]) =>
-            new THREE.Vector3((x - 0.25) * chord_m, y * chord_m, zOff)
+            new THREE.Vector3(x * chord_m, y * chord_m, zOff)
           );
           const geo = new THREE.BufferGeometry().setFromPoints(pts3D);
           const mat = new THREE.LineBasicMaterial({
@@ -1925,7 +2005,6 @@
       // Animate
       function loop3D() {
         _cfdAnimId3D = requestAnimationFrame(loop3D);
-        _cfdTheta3D += 0.004;
         _cfdCamera3D.position.set(
           _cfdRad3D * Math.sin(_cfdPhi3D) * Math.sin(_cfdTheta3D),
           _cfdRad3D * Math.cos(_cfdPhi3D),

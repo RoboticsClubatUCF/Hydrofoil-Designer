@@ -665,13 +665,17 @@ footer {
 
 .cfd-resolution-wrap { flex: 1; min-width: 200px; }
 
-.cfd-slider-row {
+.cfd-res-header {
   display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-top: 0.3rem;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.35rem;
 }
-.cfd-slider-row input[type=range] { flex: 1; accent-color: var(--blue); }
+.cfd-resolution-wrap > input[type=range] {
+  display: block;
+  width: 100%;
+  accent-color: var(--blue);
+}
 
 .cfd-res-label {
   font-size: 0.82rem;
@@ -679,31 +683,67 @@ footer {
   white-space: nowrap;
   min-width: 140px;
 }
-
 .cfd-res-marks {
   display: flex;
   justify-content: space-between;
   font-size: 0.75rem;
-  color: var(--muted);
-  padding: 0 2px;
+  color: var(--text-dim);
+  padding: 0 4px;
+}
+
+/* Hardware Settings Panel */
+.cfd-hw-settings-toggle {
+  margin-top: 1rem;
+  text-align: right;
+}
+.cfd-hw-panel {
+  background: rgba(0,0,0,0.2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 0.5rem;
+}
+.cfd-input-row {
+  display: flex;
+  gap: 2rem;
+  flex-wrap: wrap;
+}
+.cfd-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.cfd-input-group input {
+  width: 80px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.4rem;
+  border-radius: 4px;
+}
+
+.cfd-input-group .note {
   margin-top: 0.15rem;
 }
 
 /* Progress bar */
 .cfd-progress-bar-wrap {
   width: 100%;
-  height: 10px;
-  background: var(--light);
-  border-radius: 5px;
+  height: 12px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 6px;
   overflow: hidden;
-  margin: 0.6rem 0 0.4rem;
+  margin: 1rem 0 0.5rem;
+  border: 1px solid var(--border);
 }
 .cfd-progress-bar {
   height: 100%;
   width: 0%;
-  background: linear-gradient(90deg, var(--blue), #37d6e6);
-  border-radius: 5px;
-  transition: width 0.5s ease;
+  background: linear-gradient(90deg, #1fb6c9, #37d6e6);
+  border-radius: 6px;
+  transition: width 0.4s ease;
 }
 
 /* Force badges */

@@ -26,17 +26,20 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 RESOLUTION_PARAMS = {
-    1: {"level": 3, "nx": 60,  "ny": 40,  "timeout": 360,  "label": "Low"},
-    2: {"level": 4, "nx": 120, "ny": 80,  "timeout": 720,  "label": "Medium"},
-    3: {"level": 5, "nx": 200, "ny": 120, "timeout": 1500, "label": "High"},
+    1: {"level": 3, "bg_nx": 80,  "bg_ny": 40,  "nx": 60,  "ny": 40,  "timeout": 600,  "label": "Low"},
+    2: {"level": 4, "bg_nx": 140, "bg_ny": 70,  "nx": 120, "ny": 80,  "timeout": 1200, "label": "Medium"},
+    3: {"level": 5, "bg_nx": 200, "bg_ny": 100, "nx": 200, "ny": 120, "timeout": 2400, "label": "High"},
 }
 
+# Parallel execution settings for i7-10750H (12 logical processors)
+_N_PROCS = 6  # Using half the logical cores for stability and heat management
+
 # Domain in chord-normalised units
-_X_MIN_C = -5.0
-_X_MAX_C = 15.0
-_Y_MIN_C = -3.0
-_Y_MAX_C =  3.0
-_Z_DEPTH_C = 0.01   # 1-cell-thick pseudo-2D slab
+_X_MIN_C = -6.0
+_X_MAX_C = 16.0
+_Y_MIN_C = -4.0
+_Y_MAX_C =  4.0
+_Z_DEPTH_C = 0.1   # Thicker slab for better snappyHexMesh stability
 
 DOCKER_IMAGE = "pep27-openfoam"
 
@@ -90,8 +93,13 @@ def _run_job_thread(job_id: str, params: dict, case_dir: str):
         coords     = params["coords"]      # list of [x, y] in 0-1 space
         resolution = params["resolution"]
         foil_key   = params["foil"]
+        
+        n_cores    = params.get("n_cores", _N_PROCS)
+        timeout_s  = params.get("timeout_s", 1200)
 
         res = RESOLUTION_PARAMS[resolution]
+        # Override preset timeout if custom one is provided
+        sim_timeout = max(timeout_s, res["timeout"])
 
         # --- Stage 1: Generate STL ------------------------------------------
         _update(job_id, progress=3, message="Generating airfoil geometry…")
@@ -100,7 +108,7 @@ def _run_job_thread(job_id: str, params: dict, case_dir: str):
 
         # --- Stage 2: Write case files -------------------------------------
         _update(job_id, progress=6, message="Writing OpenFOAM case files…")
-        generate_case(case_dir, stl_str, chord_m, v_ms, rho, nu, resolution)
+        generate_case(case_dir, stl_str, chord_m, v_ms, rho, nu, resolution, n_cores)
 
         # --- Stage 3: Check Docker image -----------------------------------
         _update(job_id, progress=8, message="Checking Docker image…")
@@ -118,28 +126,46 @@ def _run_job_thread(job_id: str, params: dict, case_dir: str):
         # --- Stage 4: blockMesh --------------------------------------------
         _update(job_id, progress=10, message="Running blockMesh…")
         rc, stdout, stderr = _docker_run(case_dir,
-            "blockMesh > /case/log.blockMesh 2>&1", res["timeout"] // 4)
+            "blockMesh > /case/log.blockMesh 2>&1", sim_timeout // 4)
         if rc != 0:
             raise RuntimeError(f"blockMesh failed:\n{_tail(case_dir, 'log.blockMesh')}")
 
         # --- Stage 5: snappyHexMesh ----------------------------------------
         _update(job_id, progress=25, message="Running snappyHexMesh…")
         rc, _, _ = _docker_run(case_dir,
-            "snappyHexMesh -overwrite > /case/log.snappy 2>&1", res["timeout"] // 2)
+            "snappyHexMesh -overwrite > /case/log.snappy 2>&1", sim_timeout // 2)
         if rc != 0:
             raise RuntimeError(f"snappyHexMesh failed:\n{_tail(case_dir, 'log.snappy')}")
 
-        # Convert frontAndBack back to empty for 2D simpleFoam
-        _fix_frontAndBack_to_empty(case_dir)
-
-        # --- Stage 6: checkMesh (non-fatal) --------------------------------
+        # --- Stage 6: checkMesh -------------------------------------------
         _update(job_id, progress=40, message="Checking mesh quality…")
-        _docker_run(case_dir, "checkMesh > /case/log.checkMesh 2>&1", 60)
+        _docker_run(case_dir, "checkMesh > /case/log.checkMesh 2>&1", 180)
+        cm_log = _tail(case_dir, "log.checkMesh", n=60)
+        if "FAILED" in cm_log:
+            raise RuntimeError(f"checkMesh reported mesh failures:\n{cm_log}")
 
         # --- Stage 7: simpleFoam -------------------------------------------
         _update(job_id, progress=45, message="Running simpleFoam (CFD solver)…")
+        # Run simpleFoam. Note: for OpenFOAM 12 foamRun, we use -parallel if n_cores > 1.
+        # But we must have decomposed the mesh first if we use -parallel.
+        if n_cores > 1:
+            _update(job_id, message="Decomposing mesh for parallel run…")
+            rc_dec, _, _ = _docker_run(case_dir, "decomposePar -case /case -force > /case/log.decompose 2>&1", 60)
+            if rc_dec != 0:
+                 raise RuntimeError(f"decomposePar failed:\n{_tail(case_dir, 'log.decompose')}")
+            
+            sf_cmd = f"mpirun --allow-run-as-root -np {n_cores} foamRun -solver incompressibleFluid -parallel -case /case"
+        else:
+            sf_cmd = "foamRun -solver incompressibleFluid -case /case"
+
         rc, _, _ = _docker_run(case_dir,
-            "foamRun -solver incompressibleFluid > /case/log.simpleFoam 2>&1", res["timeout"])
+            f"{sf_cmd} > /case/log.simpleFoam 2>&1", sim_timeout)
+        
+        # If parallel, reconstruct before field data extraction
+        if n_cores > 1:
+            _update(job_id, message="Reconstructing parallel results…")
+            _docker_run(case_dir, "reconstructPar -case /case -latestTime > /case/log.reconstruct 2>&1", 120)
+
         # Non-zero exit on residual divergence is OK if field data was written.
         # Fatal crash (no output at all) gets a log-tailed error.
         if _find_latest_time_dir(case_dir) is None:
@@ -151,7 +177,7 @@ def _run_job_thread(job_id: str, params: dict, case_dir: str):
         # --- Stage 8: writeCellCentres -------------------------------------
         _update(job_id, progress=88, message="Post-processing field data…")
         _docker_run(case_dir,
-            "postProcess -func writeCellCentres -latestTime > /case/log.postproc 2>&1", 120)
+            "postProcess -func writeCellCentres -latestTime > /case/log.postproc 2>&1", 240)
 
         # --- Stage 9: Extract results --------------------------------------
         _update(job_id, progress=93, message="Interpolating onto visualization grid…")
@@ -239,7 +265,7 @@ def generate_airfoil_stl(coords_norm, chord_m: float, depth_m: float, aoa_deg: f
 # ---------------------------------------------------------------------------
 
 def generate_case(case_dir: str, stl_str: str, chord_m: float,
-                  v_ms: float, rho: float, nu: float, resolution: int):
+                  v_ms: float, rho: float, nu: float, resolution: int, n_cores: int):
     """Write the complete OpenFOAM case directory tree."""
     res = RESOLUTION_PARAMS[resolution]
 
@@ -271,7 +297,7 @@ vertices
   ({xmax:.6f} {ymax:.6f} {zmax:.6f})
   ({xmin:.6f} {ymax:.6f} {zmax:.6f})
 );
-blocks ( hex (0 1 2 3 4 5 6 7) (40 20 1) simpleGrading (1 1 1) );
+blocks ( hex (0 1 2 3 4 5 6 7) ({res['bg_nx']} {res['bg_ny']} 1) simpleGrading (1 1 1) );
 edges ();
 boundary
 (
@@ -279,7 +305,7 @@ boundary
   outlet {{ type patch;         faces ((1 2 6 5)); }}
   top    {{ type symmetryPlane; faces ((3 7 6 2)); }}
   bottom {{ type symmetryPlane; faces ((0 1 5 4)); }}
-  frontAndBack {{ type patch;   faces ((0 3 2 1)(4 5 6 7)); }}
+  frontAndBack {{ type symmetry; faces ((0 3 2 1)(4 5 6 7)); }}
 );
 mergePatchPairs ();
 """)
@@ -303,7 +329,7 @@ castellatedMeshControls
   maxLocalCells  2000000;
   maxGlobalCells 5000000;
   minRefinementCells 10;
-  nCellsBetweenLevels 3;
+  nCellsBetweenLevels 5;
   resolveFeatureAngle 30;
   features ();
   refinementSurfaces
@@ -312,9 +338,13 @@ castellatedMeshControls
   }}
   refinementRegions
   {{
-    airfoil {{ mode inside; levels ((1e15 {lvl})); }}
+    airfoil
+    {{
+      mode distance;
+      levels (({chord_m * 0.1:.6f} {lvl}) ({chord_m * 0.5:.6f} {max(1, lvl-1)}));
+    }}
   }}
-  locationInMesh ({chord_m * (-2.0):.6f} 0.0 0.0);
+  locationInMesh ({xmin + 0.12345:.6f} {ymax - 0.12345:.6f} 0.0);
   allowFreeStandingZoneFaces false;
 }}
 snapControls
@@ -337,7 +367,7 @@ addLayersControls
   minThickness 0.1;
   nGrow 0;
   featureAngle 60;
-  nRelaxIter 3;
+  nRelaxIter 5;
   nSmoothSurfaceNormals 1;
   nSmoothNormals 3;
   nSmoothThickness 10;
@@ -379,7 +409,7 @@ stopAt          endTime;
 endTime         500;
 deltaT          1;
 writeControl    timeStep;
-writeInterval   50;
+writeInterval   20;
 purgeWrite      3;
 writeFormat     ascii;
 writePrecision  6;
@@ -396,7 +426,7 @@ functions
     pRef            0;
     CofR            (0 0 0);
     writeControl    timeStep;
-    writeInterval   50;
+    writeInterval   20;
   }}
 }}
 """)
@@ -408,15 +438,23 @@ gradSchemes     { default Gauss linear; grad(U) Gauss linear; }
 divSchemes
 {
   default         none;
-  div(phi,U)      Gauss linearUpwind grad(U);
+  div(phi,U)      Gauss upwind;
   div(phi,k)      Gauss upwind;
   div(phi,omega)  Gauss upwind;
-  div((nuEff*dev(T(grad(U))))) Gauss linear;
+  div((nuEff*dev2(T(grad(U))))) Gauss linear;
 }
 laplacianSchemes { default Gauss linear corrected; }
 interpolationSchemes { default linear; }
 snGradSchemes   { default corrected; }
 wallDist        { method meshWave; }
+""")
+
+    # decomposeParDict
+    if n_cores > 1:
+        _write(case_dir, "system/decomposeParDict", f"""\
+FoamFile {{ version 2.0; format ascii; class dictionary; object decomposeParDict; }}
+numberOfSubdomains {n_cores};
+method          scotch;
 """)
 
     _write(case_dir, "system/fvSolution", """\
@@ -425,10 +463,11 @@ solvers
 {
   p
   {
-    solver          PCG;
-    preconditioner  DIC;
+    solver          GAMG;
     tolerance       1e-6;
     relTol          0.05;
+    smoother        GaussSeidel;
+    nCellsInCoarsestLevel 200;
   }
   U
   {
@@ -492,7 +531,7 @@ boundaryField
   top          {{ type symmetryPlane; }}
   bottom       {{ type symmetryPlane; }}
   airfoil      {{ type noSlip; }}
-  frontAndBack {{ type empty; }}
+  frontAndBack {{ type symmetry; }}
 }}
 """)
 
@@ -507,7 +546,7 @@ boundaryField
   top          { type symmetryPlane; }
   bottom       { type symmetryPlane; }
   airfoil      { type zeroGradient; }
-  frontAndBack { type empty; }
+  frontAndBack { type symmetry; }
 }
 """)
 
@@ -522,7 +561,7 @@ boundaryField
   top          {{ type symmetryPlane; }}
   bottom       {{ type symmetryPlane; }}
   airfoil      {{ type kqRWallFunction; value uniform {k_val:.6e}; }}
-  frontAndBack {{ type empty; }}
+  frontAndBack {{ type symmetry; }}
 }}
 """)
 
@@ -537,7 +576,7 @@ boundaryField
   top          {{ type symmetryPlane; }}
   bottom       {{ type symmetryPlane; }}
   airfoil      {{ type omegaWallFunction; value uniform {omega_val:.6e}; }}
-  frontAndBack {{ type empty; }}
+  frontAndBack {{ type symmetry; }}
 }}
 """)
 
@@ -552,7 +591,7 @@ boundaryField
   top          { type symmetryPlane; }
   bottom       { type symmetryPlane; }
   airfoil      { type nutkWallFunction; value uniform 0; }
-  frontAndBack { type empty; }
+  frontAndBack { type symmetry; }
 }
 """)
 
@@ -797,29 +836,49 @@ def _parse_forces(case_dir, chord_m, rho, v_ms):
     """Read the last line of the forces log and compute CL, CD."""
     forces_dir = os.path.join(case_dir, "postProcessing", "forces")
     if not os.path.exists(forces_dir):
-        return {"cl": None, "cd": None, "ld": None}
+        # Fallback: find any directory named "forces" under postProcessing
+        pp_dir = os.path.join(case_dir, "postProcessing")
+        if not os.path.exists(pp_dir):
+            return {"cl": None, "cd": None, "ld": None}
+        for root, dirs, files in os.walk(pp_dir):
+            if "forces" in dirs:
+                forces_dir = os.path.join(root, "forces")
+                break
+        else:
+            return {"cl": None, "cd": None, "ld": None}
 
     # Find the latest time sub-dir
-    subdirs = sorted(os.listdir(forces_dir))
+    subdirs = sorted([d for d in os.listdir(forces_dir) if os.path.isdir(os.path.join(forces_dir, d))])
     if not subdirs:
         return {"cl": None, "cd": None, "ld": None}
 
-    force_file = os.path.join(forces_dir, subdirs[-1], "force.dat")
-    if not os.path.exists(force_file):
+    # Try "forces.dat" (OpenFOAM 12) or "force.dat" (older versions)
+    force_file = None
+    latest_time_dir = os.path.join(forces_dir, subdirs[-1])
+    for fname in ["forces.dat", "force.dat"]:
+        candidate = os.path.join(latest_time_dir, fname)
+        if os.path.exists(candidate):
+            force_file = candidate
+            break
+
+    if force_file is None:
         return {"cl": None, "cd": None, "ld": None}
 
     last_line = None
-    with open(force_file) as fh:
-        for line in fh:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                last_line = line
+    try:
+        with open(force_file) as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    last_line = line
+    except Exception:
+        return {"cl": None, "cd": None, "ld": None}
 
     if last_line is None:
         return {"cl": None, "cd": None, "ld": None}
 
-    # Format: time (fpx fpy fpz) (fvx fvy fvz) ...
-    nums = re.findall(r'[-+]?\d*\.?\d+[eE]?[+-]?\d*', last_line)
+    # Format: time ((fpx fpy fpz) (fvx fvy fvz) ...)
+    nums = re.findall(r'[\d.eE+\-]+', last_line)
     if len(nums) < 7:
         return {"cl": None, "cd": None, "ld": None}
 
@@ -830,16 +889,28 @@ def _parse_forces(case_dir, chord_m, rho, v_ms):
         fvy = float(nums[5])   # viscous y
         fx = fpx + fvx
         fy = fpy + fvy
-        q  = 0.5 * rho * v_ms**2 * chord_m * (chord_m * _Z_DEPTH_C)
-        cd = fx / q if q else None
-        cl = fy / q if q else None
-        ld = (cl / cd) if (cd and cd != 0) else None
-        return {"cl": round(float(cl), 4) if cl is not None else None,
-                "cd": round(float(cd), 4) if cd is not None else None,
-                "ld": round(float(ld), 2) if ld is not None else None}
-    except Exception:
-        return {"cl": None, "cd": None, "ld": None}
 
+        # Safety: check for extremely large or NaN values (divergence)
+        if not (math.isfinite(fx) and math.isfinite(fy)):
+             return {"cl": None, "cd": None, "ld": None}
+
+        # Reference area A = chord * depth.
+        q  = 0.5 * rho * v_ms**2 * (chord_m * (chord_m * _Z_DEPTH_C))
+
+        cd = fx / q if q > 1e-12 else 0.0
+        cl = fy / q if q > 1e-12 else 0.0
+
+        # Clip absurd values that might come from partial divergence
+        if abs(cl) > 100 or abs(cd) > 100:
+             return {"cl": None, "cd": None, "ld": None}
+
+        ld = (cl / cd) if (abs(cd) > 1e-12) else 0.0
+
+        return {"cl": round(float(cl), 4),
+                "cd": round(float(cd), 5),
+                "ld": round(float(ld), 2)}
+    except Exception as e:
+        return {"cl": None, "cd": None, "ld": None}
 
 def _parse_convergence(case_dir):
     log_path = os.path.join(case_dir, "log.simpleFoam")
@@ -847,7 +918,8 @@ def _parse_convergence(case_dir):
         return {"iterations": 0, "final_residual": None, "diverged": True}
 
     iterations = 0
-    last_residual = None
+    max_initial_res = 0.0
+    current_iter_max_res = 0.0
     diverged = False
 
     with open(log_path) as fh:
@@ -855,16 +927,25 @@ def _parse_convergence(case_dir):
             m = re.match(r'\s*Time\s*=\s*(\d+)', line)
             if m:
                 iterations = int(m.group(1))
-            if "Initial residual" in line or "Final residual" in line:
-                mr = re.search(r'Final residual\s*=\s*([\d.eE+\-]+)', line)
+                max_initial_res = current_iter_max_res
+                current_iter_max_res = 0.0
+
+            if "Initial residual" in line:
+                mr = re.search(r'Initial residual\s*=\s*([\d.eE+\-]+)', line)
                 if mr:
-                    last_residual = float(mr.group(1))
+                    val = float(mr.group(1))
+                    if val > current_iter_max_res:
+                        current_iter_max_res = val
+
             if "DIVERGED" in line or "nan" in line.lower():
                 diverged = True
 
+    # After the loop, the last iteration's max res is in current_iter_max_res
+    final_res = max(max_initial_res, current_iter_max_res)
+
     return {
         "iterations":      iterations,
-        "final_residual":  last_residual,
+        "final_residual":  final_res if iterations > 0 else None,
         "diverged":        diverged,
     }
 
@@ -872,36 +953,6 @@ def _parse_convergence(case_dir):
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
-
-def _fix_frontAndBack_to_empty(case_dir: str):
-    """
-    snappyHexMesh needs a fully-3D mesh, so blockMesh uses type patch for
-    frontAndBack.  After snappy finishes, rewrite the polyMesh/boundary file
-    to change it back to empty so simpleFoam runs as a true 2D case.
-    """
-    boundary_path = os.path.join(case_dir, "constant", "polyMesh", "boundary")
-    if not os.path.exists(boundary_path):
-        return
-    with open(boundary_path, "r") as fh:
-        lines = fh.readlines()
-
-    in_block = False
-    brace_depth = 0
-    new_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "frontAndBack":
-            in_block = True
-        if in_block:
-            brace_depth += stripped.count("{") - stripped.count("}")
-            if in_block and re.match(r'\s*type\s+\w+\s*;', line):
-                line = re.sub(r'(type\s+)\w+', r'\1empty', line)
-            if brace_depth <= 0 and stripped.endswith("}"):
-                in_block = False
-        new_lines.append(line)
-
-    with open(boundary_path, "w", newline="\n") as fh:
-        fh.writelines(new_lines)
 
 
 def _write(case_dir, rel_path, content):
