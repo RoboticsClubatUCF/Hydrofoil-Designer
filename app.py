@@ -1,6 +1,7 @@
 import io
 import base64
 import subprocess
+import sys
 import threading
 
 import matplotlib
@@ -288,15 +289,16 @@ def start_cfd():
     except (ValueError, AssertionError):
         return jsonify({"error": "resolution must be 1, 2, or 3"}), 400
 
-    # Docker pre-flight
-    try:
-        dr = subprocess.run(["docker", "info"], capture_output=True, timeout=6)
-        if dr.returncode != 0:
-            return jsonify({"error": "Docker is not running. Start Docker Desktop and try again."}), 503
-    except FileNotFoundError:
-        return jsonify({"error": "Docker not found. Install Docker Desktop and ensure it is running."}), 503
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "Docker did not respond in time. Ensure Docker Desktop is running."}), 503
+    # Docker pre-flight (Windows only — Linux runs OpenFOAM natively)
+    if sys.platform == "win32":
+        try:
+            dr = subprocess.run(["docker", "info"], capture_output=True, timeout=6)
+            if dr.returncode != 0:
+                return jsonify({"error": "Docker is not running. Start Docker Desktop and try again."}), 503
+        except FileNotFoundError:
+            return jsonify({"error": "Docker not found. Install Docker Desktop and ensure it is running."}), 503
+        except subprocess.TimeoutExpired:
+            return jsonify({"error": "Docker did not respond in time. Ensure Docker Desktop is running."}), 503
 
     try:
         from foam_runner import submit_job
