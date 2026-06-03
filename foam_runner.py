@@ -13,11 +13,12 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import uuid
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import numpy as np
 
@@ -41,7 +42,9 @@ _Y_MIN_C = -4.0
 _Y_MAX_C =  4.0
 _Z_DEPTH_C = 0.1   # Thicker slab for better snappyHexMesh stability
 
-DOCKER_IMAGE = "pep27-openfoam"
+_ON_LINUX       = sys.platform != "win32"
+DOCKER_IMAGE    = "pep27-openfoam"
+OPENFOAM_BASHRC = "/opt/openfoam12/etc/bashrc"
 
 # ---------------------------------------------------------------------------
 # Job store
@@ -110,61 +113,52 @@ def _run_job_thread(job_id: str, params: dict, case_dir: str):
         _update(job_id, progress=6, message="Writing OpenFOAM case files…")
         generate_case(case_dir, stl_str, chord_m, v_ms, rho, nu, resolution, n_cores)
 
-        # --- Stage 3: Check Docker image -----------------------------------
-        _update(job_id, progress=8, message="Checking Docker image…")
-        inspect = subprocess.run(
-            ["docker", "image", "inspect", DOCKER_IMAGE],
-            capture_output=True
-        )
-        if inspect.returncode != 0:
-            raise RuntimeError(
-                f'Docker image "{DOCKER_IMAGE}" not found. '
-                f"Build it once from the Hydrofoil-Designer directory:\n"
-                f"  docker build -t {DOCKER_IMAGE} ."
-            )
+        # --- Stage 3: Check runtime (Docker on Windows, native on Linux) ----
+        _update(job_id, progress=8, message="Checking OpenFOAM runtime…")
+        _check_runtime()
 
         # --- Stage 4: blockMesh --------------------------------------------
         _update(job_id, progress=10, message="Running blockMesh…")
-        rc, stdout, stderr = _docker_run(case_dir,
-            "blockMesh > /case/log.blockMesh 2>&1", sim_timeout // 4)
+        rc, stdout, stderr = _foam_run(case_dir,
+            "blockMesh > {CASE}/log.blockMesh 2>&1", sim_timeout // 4)
         if rc != 0:
             raise RuntimeError(f"blockMesh failed:\n{_tail(case_dir, 'log.blockMesh')}")
 
         # --- Stage 5: snappyHexMesh ----------------------------------------
         _update(job_id, progress=25, message="Running snappyHexMesh…")
-        rc, _, _ = _docker_run(case_dir,
-            "snappyHexMesh -overwrite > /case/log.snappy 2>&1", sim_timeout // 2)
+        rc, _, _ = _foam_run(case_dir,
+            "snappyHexMesh -overwrite > {CASE}/log.snappy 2>&1", sim_timeout // 2)
         if rc != 0:
             raise RuntimeError(f"snappyHexMesh failed:\n{_tail(case_dir, 'log.snappy')}")
 
         # --- Stage 6: checkMesh -------------------------------------------
         _update(job_id, progress=40, message="Checking mesh quality…")
-        _docker_run(case_dir, "checkMesh > /case/log.checkMesh 2>&1", 180)
+        _foam_run(case_dir, "checkMesh > {CASE}/log.checkMesh 2>&1", 180)
         cm_log = _tail(case_dir, "log.checkMesh", n=60)
         if "FAILED" in cm_log:
             raise RuntimeError(f"checkMesh reported mesh failures:\n{cm_log}")
 
         # --- Stage 7: simpleFoam -------------------------------------------
         _update(job_id, progress=45, message="Running simpleFoam (CFD solver)…")
-        # Run simpleFoam. Note: for OpenFOAM 12 foamRun, we use -parallel if n_cores > 1.
-        # But we must have decomposed the mesh first if we use -parallel.
         if n_cores > 1:
             _update(job_id, message="Decomposing mesh for parallel run…")
-            rc_dec, _, _ = _docker_run(case_dir, "decomposePar -case /case -force > /case/log.decompose 2>&1", 60)
+            rc_dec, _, _ = _foam_run(case_dir,
+                "decomposePar -case {CASE} -force > {CASE}/log.decompose 2>&1", 60)
             if rc_dec != 0:
-                 raise RuntimeError(f"decomposePar failed:\n{_tail(case_dir, 'log.decompose')}")
-            
-            sf_cmd = f"mpirun --allow-run-as-root -np {n_cores} foamRun -solver incompressibleFluid -parallel -case /case"
-        else:
-            sf_cmd = "foamRun -solver incompressibleFluid -case /case"
+                raise RuntimeError(f"decomposePar failed:\n{_tail(case_dir, 'log.decompose')}")
 
-        rc, _, _ = _docker_run(case_dir,
-            f"{sf_cmd} > /case/log.simpleFoam 2>&1", sim_timeout)
-        
+            sf_cmd = f"mpirun --allow-run-as-root -np {n_cores} foamRun -solver incompressibleFluid -parallel -case {{CASE}}"
+        else:
+            sf_cmd = "foamRun -solver incompressibleFluid -case {CASE}"
+
+        rc, _, _ = _foam_run(case_dir,
+            sf_cmd + " > {CASE}/log.simpleFoam 2>&1", sim_timeout)
+
         # If parallel, reconstruct before field data extraction
         if n_cores > 1:
             _update(job_id, message="Reconstructing parallel results…")
-            _docker_run(case_dir, "reconstructPar -case /case -latestTime > /case/log.reconstruct 2>&1", 120)
+            _foam_run(case_dir,
+                "reconstructPar -case {CASE} -latestTime > {CASE}/log.reconstruct 2>&1", 120)
 
         # Non-zero exit on residual divergence is OK if field data was written.
         # Fatal crash (no output at all) gets a log-tailed error.
@@ -176,8 +170,8 @@ def _run_job_thread(job_id: str, params: dict, case_dir: str):
 
         # --- Stage 8: writeCellCentres -------------------------------------
         _update(job_id, progress=88, message="Post-processing field data…")
-        _docker_run(case_dir,
-            "postProcess -func writeCellCentres -latestTime > /case/log.postproc 2>&1", 240)
+        _foam_run(case_dir,
+            "postProcess -func writeCellCentres -latestTime > {CASE}/log.postproc 2>&1", 240)
 
         # --- Stage 9: Extract results --------------------------------------
         _update(job_id, progress=93, message="Interpolating onto visualization grid…")
@@ -597,28 +591,72 @@ boundaryField
 
 
 # ---------------------------------------------------------------------------
-# Docker execution
+# Execution — Docker on Windows, native bash on Linux
 # ---------------------------------------------------------------------------
 
+def _check_runtime():
+    """Raise RuntimeError if the required OpenFOAM runtime is not available."""
+    if _ON_LINUX:
+        r = subprocess.run(
+            ["bash", "-c", f"source {OPENFOAM_BASHRC} && blockMesh -help"],
+            capture_output=True,
+        )
+        if r.returncode not in (0, 1):
+            raise RuntimeError(
+                "OpenFOAM 12 not found. Install it:\n"
+                "  https://openfoam.org/download/12-ubuntu/"
+            )
+    else:
+        r = subprocess.run(
+            ["docker", "image", "inspect", DOCKER_IMAGE], capture_output=True
+        )
+        if r.returncode != 0:
+            raise RuntimeError(
+                f'Docker image "{DOCKER_IMAGE}" not found. '
+                f"Build it from the project directory:\n"
+                f"  docker build -t {DOCKER_IMAGE} ."
+            )
+
+
+def _foam_run(case_dir: str, cmd: str, timeout_s: int):
+    """Dispatch to Docker (Windows) or native bash (Linux).
+
+    Use {CASE} in cmd as a placeholder for the case directory path.
+    """
+    if _ON_LINUX:
+        return _native_run(case_dir, cmd, timeout_s)
+    return _docker_run(case_dir, cmd, timeout_s)
+
+
+def _native_run(case_dir: str, cmd: str, timeout_s: int):
+    actual_cmd = cmd.replace("{CASE}", case_dir)
+    full_cmd = f"source {OPENFOAM_BASHRC} && cd {case_dir} && {actual_cmd}"
+    result = subprocess.run(
+        ["bash", "-c", full_cmd],
+        capture_output=True, text=True, timeout=timeout_s,
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
 def _docker_run(case_dir: str, cmd: str, timeout_s: int):
-    """Run a shell command inside the OpenFOAM Docker container, mounted at /case."""
-    posix_path = _windows_to_docker_path(case_dir)
-    full_cmd = f"source /opt/openfoam12/etc/bashrc && cd /case && {cmd}"
+    posix_path = _to_docker_path(case_dir)
+    actual_cmd = cmd.replace("{CASE}", "/case")
+    full_cmd = f"source /opt/openfoam12/etc/bashrc && cd /case && {actual_cmd}"
     result = subprocess.run(
         ["docker", "run", "--rm",
          "-v", f"{posix_path}:/case",
          DOCKER_IMAGE,
          "bash", "-c", full_cmd],
-        capture_output=True, text=True, timeout=timeout_s
+        capture_output=True, text=True, timeout=timeout_s,
     )
     return result.returncode, result.stdout, result.stderr
 
 
-def _windows_to_docker_path(path: str) -> str:
-    """Convert Windows path to Docker-for-Desktop mount format (/c/Users/...)."""
+def _to_docker_path(path: str) -> str:
+    """Convert a Windows path to Docker-for-Desktop POSIX mount format."""
     p = Path(path)
-    drive = p.drive.lower().rstrip(":")   # e.g. "c"
-    rest  = str(p.relative_to(p.anchor)).replace("\\", "/")
+    drive = p.drive.lower().rstrip(":")
+    rest = str(p.relative_to(p.anchor)).replace("\\", "/")
     return f"/{drive}/{rest}"
 
 
