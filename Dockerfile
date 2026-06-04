@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -15,9 +15,9 @@ RUN wget -qO /tmp/openfoam.key https://dl.openfoam.org/gpg.key \
     && gpg --dearmor < /tmp/openfoam.key > /etc/apt/trusted.gpg.d/openfoam.gpg \
     && rm /tmp/openfoam.key
 
-# Add apt repo and install OpenFOAM 12
+# Add apt repo and install OpenFOAM 13
 RUN echo "deb http://dl.openfoam.org/ubuntu $(lsb_release -cs) main" \
         > /etc/apt/sources.list.d/openfoam.list \
     && apt-get update \
-    && apt-get install -y openfoam12 \
+    && apt-get install -y openfoam13 \
     && rm -rf /var/lib/apt/lists/*

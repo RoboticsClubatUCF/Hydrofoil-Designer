@@ -255,11 +255,14 @@
     <!-- ===== 2D FLOW VISUALIZATION ===== -->
     <section id="flow-panel" style="display:none;">
       <div class="card" style="padding:0; overflow:hidden;">
-        <div style="padding:1rem 1.5rem 0.75rem; border-bottom:1px solid var(--border);">
-          <h2 style="border-bottom:none; padding-bottom:0;">Flow Visualization &mdash; 2D Potential Flow (Inviscid)</h2>
-          <p class="note" style="margin-top:0.25rem;">Inviscid panel method &mdash; no boundary layer, no separation effects</p>
+        <div style="padding:1rem 1.5rem 0.75rem; border-bottom:1px solid var(--border); display:flex; align-items:flex-start; justify-content:space-between; gap:1rem;">
+          <div>
+            <h2 style="border-bottom:none; padding-bottom:0;">Flow Visualization &mdash; 2D Potential Flow (Inviscid)</h2>
+            <p class="note" style="margin-top:0.25rem;">Inviscid panel method &mdash; no boundary layer, no separation effects</p>
+          </div>
+          <button id="flow-toggle-btn" class="btn-link" style="white-space:nowrap; flex-shrink:0; margin-top:0.2rem;">Hide</button>
         </div>
-        <div class="flow-canvases">
+        <div id="flow-canvases-wrap" class="flow-canvases">
           <div class="flow-canvas-wrap">
             <div class="flow-canvas-title">Front Foil</div>
             <canvas id="flow-canvas-front"></canvas>
@@ -275,8 +278,9 @@
     <!-- ===== 3D ASSEMBLY PREVIEW ===== -->
     <section id="viz-panel" style="display:none;">
       <div class="card" style="padding:0; overflow:hidden;">
-        <div style="padding:1rem 1.5rem 0.75rem; border-bottom:1px solid var(--border);">
+        <div style="padding:1rem 1.5rem 0.75rem; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between;">
           <h2 style="border-bottom:none; padding-bottom:0;">3D Assembly Preview</h2>
+          <button id="viz-toggle-btn" class="btn-link" style="white-space:nowrap; flex-shrink:0;">Hide</button>
         </div>
         <div id="viz-inner">
           <div id="viz-sidebar">
@@ -341,15 +345,23 @@
           <div class="cfd-input-row">
             <label class="cfd-input-group">
               CPU Cores
-              <input type="number" id="cfd-cores" value="6" min="1" max="64" />
+              <input type="number" id="cfd-cores" value="6" min="1" max="256" />
               <span class="note">Parallel processes</span>
             </label>
             <label class="cfd-input-group">
               Timeout (min)
-              <input type="number" id="cfd-timeout" value="20" min="5" max="120" />
+              <input type="number" id="cfd-timeout" value="20" min="5" max="9999" />
               <span class="note">Max run time</span>
             </label>
           </div>
+          <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.4rem;font-size:0.88rem;cursor:pointer;">
+            <input type="checkbox" id="cfd-all-cores" />
+            Use all available cores <span id="cfd-all-cores-label" style="color:#555;"></span>
+          </label>
+          <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;font-size:0.88rem;cursor:pointer;">
+            <input type="checkbox" id="cfd-no-timeout" />
+            No timeout &mdash; run until complete (may take hours on High)
+          </label>
           <p class="note" style="margin-top:0.5rem;">Higher cores speed up 'Medium/High' resolution. Adjust timeout if 'High' jobs fail early.</p>
         </div>
 
@@ -994,6 +1006,7 @@
     let _vizTheta = 0.85, _vizPhi = 1.18, _vizRad = 3.8;
     let _vizTarget, _vizDrag = null, _vizSpin = false;
     let _vizFoils = null;
+    let _vizAnimId = null;
 
     function _vizOpts() {
       return {
@@ -1065,17 +1078,24 @@
       window.addEventListener('resize', resizeViz);
       resizeViz();
 
-      (function loop() {
-        requestAnimationFrame(loop);
-        if (_vizSpin) _vizTheta += 0.0026;
-        _vizCamera.position.set(
-          _vizTarget.x + _vizRad * Math.sin(_vizPhi) * Math.sin(_vizTheta),
-          _vizTarget.y + _vizRad * Math.cos(_vizPhi),
-          _vizTarget.z + _vizRad * Math.sin(_vizPhi) * Math.cos(_vizTheta)
-        );
-        _vizCamera.lookAt(_vizTarget);
-        _vizRenderer.render(_vizScene, _vizCamera);
-      })();
+      function _vizStartLoop() {
+        if (_vizAnimId !== null) return;
+        (function loop() {
+          _vizAnimId = requestAnimationFrame(loop);
+          if (_vizSpin) _vizTheta += 0.0026;
+          _vizCamera.position.set(
+            _vizTarget.x + _vizRad * Math.sin(_vizPhi) * Math.sin(_vizTheta),
+            _vizTarget.y + _vizRad * Math.cos(_vizPhi),
+            _vizTarget.z + _vizRad * Math.sin(_vizPhi) * Math.cos(_vizTheta)
+          );
+          _vizCamera.lookAt(_vizTarget);
+          _vizRenderer.render(_vizScene, _vizCamera);
+        })();
+      }
+      function _vizStopLoop() {
+        if (_vizAnimId !== null) { cancelAnimationFrame(_vizAnimId); _vizAnimId = null; }
+      }
+      _vizStartLoop();
 
       const cs = document.getElementById('viz-clear');
       const bs = document.getElementById('viz-boom');
@@ -1418,6 +1438,13 @@
 
     function showViz(data) {
       document.getElementById('viz-panel').style.display = '';
+      // If the user previously hid the panel, re-show it
+      const vizInner = document.getElementById('viz-inner');
+      const vizBtn   = document.getElementById('viz-toggle-btn');
+      if (vizInner.style.display === 'none') {
+        vizInner.style.display = '';
+        if (vizBtn) vizBtn.textContent = 'Hide';
+      }
       if (!_vizInit) initViz();
       _vizFoils = [
         { role: 'front', ...data.front },
@@ -1426,12 +1453,63 @@
       _buildVizScene(_vizFoils, _vizOpts());
     }
 
+    document.getElementById('viz-toggle-btn').addEventListener('click', function() {
+      const inner = document.getElementById('viz-inner');
+      const hiding = inner.style.display !== 'none';
+      inner.style.display = hiding ? 'none' : '';
+      this.textContent = hiding ? 'Show' : 'Hide';
+      if (hiding) {
+        _vizStopLoop();
+      } else if (_vizInit) {
+        _vizStartLoop();
+      }
+    });
+
+    document.getElementById('flow-toggle-btn').addEventListener('click', function() {
+      const wrap   = document.getElementById('flow-canvases-wrap');
+      const hiding = wrap.style.display !== 'none';
+      wrap.style.display = hiding ? 'none' : '';
+      this.textContent = hiding ? 'Show' : 'Hide';
+      if (hiding) {
+        ['flow-canvas-front', 'flow-canvas-rear'].forEach(id => {
+          if (_flowAnimIds[id]) { cancelAnimationFrame(_flowAnimIds[id]); _flowAnimIds[id] = null; }
+        });
+      } else if (lastResults) {
+        requestAnimationFrame(() => {
+          drawFlowCanvas('flow-canvas-front', lastResults.front);
+          drawFlowCanvas('flow-canvas-rear',  lastResults.rear);
+        });
+      }
+    });
+
     // -----------------------------------------------------------------------
     // CFD state
     // -----------------------------------------------------------------------
     let _lastVMs  = null;
     let _lastRho  = null;
     let _cfdJobId = null;
+    let _sysCpuCount = null;
+
+    // Fetch system CPU count once and wire up the "all cores" checkbox
+    fetch('/api/system-info').then(r => r.json()).then(info => {
+      _sysCpuCount = info.cpu_count || 1;
+      const label = document.getElementById('cfd-all-cores-label');
+      if (label) label.textContent = `(${_sysCpuCount} available)`;
+    }).catch(() => {});
+
+    document.getElementById('cfd-all-cores').addEventListener('change', function() {
+      const coresInput = document.getElementById('cfd-cores');
+      if (this.checked) {
+        coresInput.disabled = true;
+        if (_sysCpuCount) coresInput.value = _sysCpuCount;
+      } else {
+        coresInput.disabled = false;
+      }
+    });
+
+    document.getElementById('cfd-no-timeout').addEventListener('change', function() {
+      document.getElementById('cfd-timeout').disabled = this.checked;
+    });
     let _cfdPollTimer = null;
     let _cfdResult    = null;
     let _cfdAnimId2D  = null;
@@ -1481,8 +1559,11 @@
       const foilData = lastResults[foilId];
       const resolution = parseInt(document.getElementById('cfd-resolution').value);
       
-      const nCores  = parseInt(document.getElementById('cfd-cores').value) || 1;
-      const timeout = (parseInt(document.getElementById('cfd-timeout').value) || 20) * 60;
+      const allCores  = document.getElementById('cfd-all-cores').checked;
+      const noTimeout = document.getElementById('cfd-no-timeout').checked;
+      const nCores  = allCores ? (_sysCpuCount || parseInt(document.getElementById('cfd-cores').value) || 1)
+                               : (parseInt(document.getElementById('cfd-cores').value) || 1);
+      const timeout = noTimeout ? 0 : (parseInt(document.getElementById('cfd-timeout').value) || 20) * 60;
 
       document.getElementById('cfd-launch-error').style.display = 'none';
       document.getElementById('cfd-launch-card').style.display   = 'none';
@@ -1521,11 +1602,17 @@
       }
     });
 
-    document.getElementById('cfd-cancel-btn').addEventListener('click', () => {
+    document.getElementById('cfd-cancel-btn').addEventListener('click', async () => {
       if (_cfdPollTimer) { clearTimeout(_cfdPollTimer); _cfdPollTimer = null; }
+      const jobToCancel = _cfdJobId;
       _cfdJobId = null;
       document.getElementById('cfd-progress-card').style.display = 'none';
       document.getElementById('cfd-launch-card').style.display   = '';
+      if (jobToCancel) {
+        try {
+          await fetch(`/api/cfd/${jobToCancel}`, { method: 'DELETE' });
+        } catch(_) {}
+      }
     });
 
     // -----------------------------------------------------------------------

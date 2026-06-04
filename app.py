@@ -1,5 +1,6 @@
 import io
 import base64
+import os
 import subprocess
 import sys
 import threading
@@ -35,6 +36,11 @@ def _mu_from_rho(r):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/system-info", methods=["GET"])
+def system_info():
+    return jsonify({"cpu_count": os.cpu_count() or 1})
 
 
 @app.route("/api/calculate", methods=["POST"])
@@ -289,16 +295,17 @@ def start_cfd():
     except (ValueError, AssertionError):
         return jsonify({"error": "resolution must be 1, 2, or 3"}), 400
 
-    # Docker pre-flight (Windows only — Linux runs OpenFOAM natively)
-    if sys.platform == "win32":
+    # Docker pre-flight — run whenever native OpenFOAM is not installed
+    from foam_runner import _OPENFOAM_AVAILABLE as _foam_native
+    if not _foam_native:
         try:
             dr = subprocess.run(["docker", "info"], capture_output=True, timeout=6)
             if dr.returncode != 0:
-                return jsonify({"error": "Docker is not running. Start Docker Desktop and try again."}), 503
+                return jsonify({"error": "Docker is not running. Start Docker and try again."}), 503
         except FileNotFoundError:
-            return jsonify({"error": "Docker not found. Install Docker Desktop and ensure it is running."}), 503
+            return jsonify({"error": "Docker not found and OpenFOAM is not installed natively."}), 503
         except subprocess.TimeoutExpired:
-            return jsonify({"error": "Docker did not respond in time. Ensure Docker Desktop is running."}), 503
+            return jsonify({"error": "Docker did not respond in time. Ensure Docker is running."}), 503
 
     try:
         from foam_runner import submit_job
@@ -322,6 +329,18 @@ def start_cfd():
 
     job_id = submit_job(params)
     return jsonify({"job_id": job_id}), 202
+
+
+@app.route("/api/cfd/<job_id>", methods=["DELETE"])
+def cancel_cfd(job_id):
+    try:
+        from foam_runner import cancel_job
+    except ImportError as e:
+        return jsonify({"error": str(e)}), 500
+    ok = cancel_job(job_id)
+    if not ok:
+        return jsonify({"error": "Job not found or not running"}), 404
+    return jsonify({"status": "cancelled"}), 200
 
 
 @app.route("/api/cfd/<job_id>", methods=["GET"])

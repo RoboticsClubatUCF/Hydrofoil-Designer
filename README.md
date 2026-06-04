@@ -18,7 +18,7 @@ A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat`
 - **Vortex panel method** — real-time 2D flow field visualization (pressure and velocity) with animated particle tracers
 - Generates a **STEP solid** of each foil for direct import into CAD software
 - **Interactive 3D assembly preview** — foils, struts, and hull rendered in-browser with drag/zoom controls
-- **OpenFOAM CFD simulation** (requires Docker Desktop) — full viscous 2D CFD via Docker, with animated 2D color-map and 3D streamline visualization rendered client-side
+- **OpenFOAM CFD simulation** — full viscous 2D CFD running natively on Linux (OpenFOAM 13) or via Docker on Windows/macOS, with animated 2D color-map and 3D streamline visualization rendered client-side
 - **Settings export/import** — save and restore all form values as a JSON file
 - Light and **dark mode** support
 - Unit-flexible inputs: N / lbs / kg, km/h / m/s / knots, fresh / brackish / salt / custom water density
@@ -31,7 +31,7 @@ A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat`
 
 - Python 3.10+
 - Windows, macOS, or Linux
-- **Docker Desktop** (optional — required only for OpenFOAM CFD simulation)
+- **OpenFOAM 13** (Linux — native, no Docker needed) or **Docker Desktop** (Windows/macOS — required only for CFD)
 
 ### Install
 
@@ -50,6 +50,26 @@ source .venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
+```
+
+#### Linux: install OpenFOAM 13 natively (Ubuntu 25.10 / 26.04)
+
+```bash
+sudo wget -O /etc/apt/trusted.gpg.d/openfoam.asc https://dl.openfoam.org/gpg.key
+sudo add-apt-repository "deb http://dl.openfoam.org/ubuntu questing main"
+sudo apt-get update
+sudo apt-get install -y openfoam13
+```
+
+This installs to `/opt/openfoam13/` — the path the app expects. No Docker required.
+
+For other Ubuntu versions replace `questing` with the codename matching your release (e.g. `noble` for 24.04). See [openfoam.org/download/13-ubuntu](https://openfoam.org/download/13-ubuntu/) for the full list.
+
+#### Windows / macOS: use Docker
+
+```bash
+# Build the OpenFOAM Docker image (~5–10 min, only needed once)
+docker build -t pep27-openfoam .
 ```
 
 ### Run
@@ -140,23 +160,21 @@ An interactive 3D scene appears below the results showing the full hydrofoil ass
 
 Sliders and toggles in the sidebar let you adjust hull clearance and foil separation in real time, and toggle the waterline plane, labels, wireframe, and auto-rotate.
 
-### 6. OpenFOAM CFD Simulation (requires Docker Desktop)
+### 6. OpenFOAM CFD Simulation
 
-After calculating, a **CFD Simulation** panel appears automatically below the results. This runs a full viscous 2D CFD simulation using OpenFOAM inside Docker — no local OpenFOAM installation required.
+After calculating, a **CFD Simulation** panel appears automatically below the results. This runs a full viscous 2D CFD simulation using OpenFOAM — natively on Linux or via Docker on Windows/macOS.
 
 #### One-time setup
 
-**1. Install Docker Desktop**
-Download and install [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/), then start it. The whale icon in the system tray should show "Docker Desktop is running".
+**Linux** — install OpenFOAM 13 via apt (see [Setup](#setup) above). No Docker needed.
 
-**2. Build the OpenFOAM Docker image** (~5–10 min, only needed once)
+**Windows / macOS** — install Docker Desktop and build the image:
 
-From the `Hydrofoil-Designer` directory:
 ```bash
 docker build -t pep27-openfoam .
 ```
 
-This pulls Ubuntu 22.04 and installs OpenFOAM 12 from the official OpenFOAM Foundation apt repository. The final image is several GB. Verify it built successfully:
+Verify it built:
 ```bash
 docker image ls pep27-openfoam
 ```
@@ -189,8 +207,9 @@ A progress bar tracks each solver stage: STL generation → blockMesh → snappy
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| "Docker is not running" error | Docker Desktop not started | Start Docker Desktop and wait for the whale icon |
+| "Docker is not running" error | Docker Desktop not started (Windows/macOS) | Start Docker Desktop and wait for the whale icon |
 | "Docker image not found" error | Image not built yet | Run `docker build -t pep27-openfoam .` from `Hydrofoil-Designer/` |
+| `libscotch.so` / shared library error (Linux) | OpenFOAM not installed or wrong version | Install OpenFOAM 13 via apt; see Setup above |
 | "Diverged" status badge | Non-physical result (high AoA, coarse mesh) | Try Low resolution first; reduce AoA if divergence persists |
 | Slow runs on low-core machines | Default core count too high | Open Hardware Settings and lower the CPU core count |
 | No CFD panel visible | Calculate hasn't been run yet | Click Calculate & Preview first |
@@ -240,8 +259,8 @@ Hydrofoil-Designer/
 ├── foil_math.py        # Aerodynamic calculations and constraint checks
 ├── foil_polar.py       # NeuralFoil polar analysis (CL/CD vs α)
 ├── panel_method.py     # 2D vortex panel method flow field solver
-├── foam_runner.py      # OpenFOAM CFD orchestration (STL gen, case files, Docker,
-│                       #   field parsing, scipy interpolation, async job system)
+├── foam_runner.py      # OpenFOAM CFD orchestration (STL gen, case files, native Linux
+│                       #   or Docker fallback, field parsing, async job system)
 ├── step_generator.py   # OCP: 2D profile → 3D STEP file
 ├── requirements.txt
 ├── templates/

@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -27,9 +28,9 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 RESOLUTION_PARAMS = {
-    1: {"level": 3, "bg_nx": 80,  "bg_ny": 40,  "nx": 60,  "ny": 40,  "timeout": 600,  "label": "Low"},
-    2: {"level": 4, "bg_nx": 140, "bg_ny": 70,  "nx": 120, "ny": 80,  "timeout": 1200, "label": "Medium"},
-    3: {"level": 5, "bg_nx": 200, "bg_ny": 100, "nx": 200, "ny": 120, "timeout": 2400, "label": "High"},
+    1: {"level": 3, "bg_nx": 80,  "bg_ny": 40,  "nx": 60,  "ny": 40,  "timeout": 600,  "label": "Low",    "cells_between_levels": 3, "layer_iter": 30},
+    2: {"level": 4, "bg_nx": 140, "bg_ny": 70,  "nx": 120, "ny": 80,  "timeout": 1200, "label": "Medium", "cells_between_levels": 4, "layer_iter": 40},
+    3: {"level": 5, "bg_nx": 200, "bg_ny": 100, "nx": 200, "ny": 120, "timeout": 2400, "label": "High",   "cells_between_levels": 4, "layer_iter": 50},
 }
 
 # Parallel execution settings for i7-10750H (12 logical processors)
@@ -42,9 +43,25 @@ _Y_MIN_C = -4.0
 _Y_MAX_C =  4.0
 _Z_DEPTH_C = 0.1   # Thicker slab for better snappyHexMesh stability
 
-_ON_LINUX       = sys.platform != "win32"
-DOCKER_IMAGE    = "pep27-openfoam"
-OPENFOAM_BASHRC = "/opt/openfoam12/etc/bashrc"
+DOCKER_IMAGE        = "pep27-openfoam"
+OPENFOAM_BASHRC     = "/opt/openfoam13/etc/bashrc"
+_OPENFOAM_DIR       = str(Path(OPENFOAM_BASHRC).parent.parent)  # /opt/openfoam13
+_OPENFOAM_AVAILABLE = os.path.exists(OPENFOAM_BASHRC)
+
+# Minimal bash preamble that sets up the OpenFOAM environment without sourcing
+# the full bashrc (which hangs in non-interactive subprocesses due to
+# bash_completion loading).
+_OPENFOAM_ENV_SETUP = (
+    "unset WM_BASH_FUNCTIONS; "
+    f"export WM_PROJECT_DIR={_OPENFOAM_DIR} FOAM_INST_DIR=/opt "
+    f"WM_THIRD_PARTY_DIR={_OPENFOAM_DIR}/thirdparty "
+    "WM_ARCH_OPTION=64 WM_COMPILER_TYPE=system WM_COMPILER=Gcc "
+    "WM_PRECISION_OPTION=DP WM_LABEL_SIZE=32 WM_COMPILE_OPTION=Opt "
+    "WM_MPLIB=SYSTEMOPENMPI WM_OSTYPE=POSIX; "
+    f". {_OPENFOAM_DIR}/etc/config.sh/functions; "
+    f". {_OPENFOAM_DIR}/etc/config.sh/settings; "
+    f". $({_OPENFOAM_DIR}/bin/foamEtcFile config.sh/mpi 2>/dev/null)"
+)
 
 # ---------------------------------------------------------------------------
 # Job store
@@ -59,13 +76,14 @@ def submit_job(params: dict) -> str:
     case_dir = tempfile.mkdtemp(prefix=f"foam_{job_id}_")
     with _JOBS_LOCK:
         _JOBS[job_id] = {
-            "status":   "running",
-            "progress": 0,
-            "message":  "Initialising…",
-            "result":   None,
+            "status":       "running",
+            "progress":     0,
+            "message":      "Initialising…",
+            "result":       None,
             "error_detail": None,
-            "case_dir": case_dir,
-            "created":  time.time(),
+            "case_dir":     case_dir,
+            "created":      time.time(),
+            "current_proc": None,   # Popen handle of the active subprocess
         }
     t = threading.Thread(target=_run_job_thread, args=(job_id, params, case_dir), daemon=True)
     t.start()
@@ -77,9 +95,43 @@ def get_job(job_id: str) -> dict | None:
         return _JOBS.get(job_id)
 
 
+def cancel_job(job_id: str) -> bool:
+    """Mark the job cancelled and kill any running subprocess."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None or job["status"] not in ("running",):
+            return False
+        job["status"]  = "cancelled"
+        job["message"] = "Cancelled by user."
+        proc = job.get("current_proc")
+
+    if proc is not None:
+        _kill_proc(proc)
+    return True
+
+
+def _kill_proc(proc: subprocess.Popen):
+    """Kill a process and its entire process group."""
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def _update(job_id, **kw):
     with _JOBS_LOCK:
         _JOBS[job_id].update(kw)
+
+
+def _check_cancelled(job_id):
+    """Raise if the job has been cancelled."""
+    with _JOBS_LOCK:
+        if _JOBS.get(job_id, {}).get("status") == "cancelled":
+            raise RuntimeError("Job cancelled by user.")
 
 
 # ---------------------------------------------------------------------------
@@ -101,49 +153,64 @@ def _run_job_thread(job_id: str, params: dict, case_dir: str):
         timeout_s  = params.get("timeout_s", 1200)
 
         res = RESOLUTION_PARAMS[resolution]
-        # Override preset timeout if custom one is provided
-        sim_timeout = max(timeout_s, res["timeout"])
+        # timeout_s == 0 means "run until complete" — no deadline enforced
+        if timeout_s == 0:
+            sim_timeout = None
+        else:
+            sim_timeout = max(timeout_s, res["timeout"])
+
+        # Helper: divide a timeout that may be None
+        def _t(divisor):
+            return None if sim_timeout is None else sim_timeout // divisor
 
         # --- Stage 1: Generate STL ------------------------------------------
         _update(job_id, progress=3, message="Generating airfoil geometry…")
         depth_m = max(chord_m * _Z_DEPTH_C, chord_m * 0.002)
         stl_str = generate_airfoil_stl(coords, chord_m, depth_m, aoa_deg)
+        _check_cancelled(job_id)
 
         # --- Stage 2: Write case files -------------------------------------
         _update(job_id, progress=6, message="Writing OpenFOAM case files…")
         generate_case(case_dir, stl_str, chord_m, v_ms, rho, nu, resolution, n_cores)
+        _check_cancelled(job_id)
 
         # --- Stage 3: Check runtime (Docker on Windows, native on Linux) ----
         _update(job_id, progress=8, message="Checking OpenFOAM runtime…")
         _check_runtime()
+        _check_cancelled(job_id)
 
         # --- Stage 4: blockMesh --------------------------------------------
         _update(job_id, progress=10, message="Running blockMesh…")
-        rc, stdout, stderr = _foam_run(case_dir,
-            "blockMesh > {CASE}/log.blockMesh 2>&1", sim_timeout // 4)
+        rc, stdout, stderr = _foam_run(job_id, case_dir,
+            "blockMesh > {CASE}/log.blockMesh 2>&1", _t(4))
         if rc != 0:
             raise RuntimeError(f"blockMesh failed:\n{_tail(case_dir, 'log.blockMesh')}")
+        _check_cancelled(job_id)
 
-        # --- Stage 5: snappyHexMesh ----------------------------------------
-        _update(job_id, progress=25, message="Running snappyHexMesh…")
-        rc, _, _ = _foam_run(case_dir,
-            "snappyHexMesh -overwrite > {CASE}/log.snappy 2>&1", sim_timeout // 2)
+        # --- Stage 5: snappyHexMesh (always serial — parallel snappy + reconstructParMesh
+        #             can silently drop boundary patches, giving zero airfoil forces) -----
+        _update(job_id, progress=20, message="Running snappyHexMesh…")
+        _check_cancelled(job_id)
+        rc, _, _ = _foam_run(job_id, case_dir,
+            "snappyHexMesh -overwrite > {CASE}/log.snappy 2>&1", _t(2))
         if rc != 0:
             raise RuntimeError(f"snappyHexMesh failed:\n{_tail(case_dir, 'log.snappy')}")
 
         # --- Stage 6: checkMesh -------------------------------------------
-        _update(job_id, progress=40, message="Checking mesh quality…")
-        _foam_run(case_dir, "checkMesh > {CASE}/log.checkMesh 2>&1", 180)
+        _check_cancelled(job_id)
+        _update(job_id, progress=42, message="Checking mesh quality…")
+        _foam_run(job_id, case_dir, "checkMesh > {CASE}/log.checkMesh 2>&1", 180)
         cm_log = _tail(case_dir, "log.checkMesh", n=60)
         if "FAILED" in cm_log:
             raise RuntimeError(f"checkMesh reported mesh failures:\n{cm_log}")
 
         # --- Stage 7: simpleFoam -------------------------------------------
+        _check_cancelled(job_id)
         _update(job_id, progress=45, message="Running simpleFoam (CFD solver)…")
         if n_cores > 1:
-            _update(job_id, message="Decomposing mesh for parallel run…")
-            rc_dec, _, _ = _foam_run(case_dir,
-                "decomposePar -case {CASE} -force > {CASE}/log.decompose 2>&1", 60)
+            _update(job_id, message="Decomposing mesh for parallel solver…")
+            rc_dec, _, _ = _foam_run(job_id, case_dir,
+                "decomposePar -case {CASE} -force > {CASE}/log.decompose 2>&1", 120)
             if rc_dec != 0:
                 raise RuntimeError(f"decomposePar failed:\n{_tail(case_dir, 'log.decompose')}")
 
@@ -151,14 +218,18 @@ def _run_job_thread(job_id: str, params: dict, case_dir: str):
         else:
             sf_cmd = "foamRun -solver incompressibleFluid -case {CASE}"
 
-        rc, _, _ = _foam_run(case_dir,
+        rc, _, _ = _foam_run(job_id, case_dir,
             sf_cmd + " > {CASE}/log.simpleFoam 2>&1", sim_timeout)
 
         # If parallel, reconstruct before field data extraction
         if n_cores > 1:
             _update(job_id, message="Reconstructing parallel results…")
-            _foam_run(case_dir,
+            _foam_run(job_id, case_dir,
                 "reconstructPar -case {CASE} -latestTime > {CASE}/log.reconstruct 2>&1", 120)
+            # Recompute forces serially from the reconstructed fields.
+            _foam_run(job_id, case_dir,
+                "foamRun -solver incompressibleFluid -postProcess -func forces -latestTime"
+                " > {CASE}/log.forces_postproc 2>&1", 120)
 
         # Non-zero exit on residual divergence is OK if field data was written.
         # Fatal crash (no output at all) gets a log-tailed error.
@@ -169,8 +240,9 @@ def _run_job_thread(job_id: str, params: dict, case_dir: str):
             )
 
         # --- Stage 8: writeCellCentres -------------------------------------
+        _check_cancelled(job_id)
         _update(job_id, progress=88, message="Post-processing field data…")
-        _foam_run(case_dir,
+        _foam_run(job_id, case_dir,
             "postProcess -func writeCellCentres -latestTime > {CASE}/log.postproc 2>&1", 240)
 
         # --- Stage 9: Extract results --------------------------------------
@@ -304,7 +376,9 @@ boundary
 mergePatchPairs ();
 """)
 
-    lvl = res["level"]
+    lvl              = res["level"]
+    cells_btw_levels = res["cells_between_levels"]
+    layer_iter       = res["layer_iter"]
     _write(case_dir, "system/snappyHexMeshDict", f"""\
 FoamFile {{ version 2.0; format ascii; class dictionary; object snappyHexMeshDict; }}
 castellatedMesh true;
@@ -323,7 +397,7 @@ castellatedMeshControls
   maxLocalCells  2000000;
   maxGlobalCells 5000000;
   minRefinementCells 10;
-  nCellsBetweenLevels 5;
+  nCellsBetweenLevels {cells_btw_levels};
   resolveFeatureAngle 30;
   features ();
   refinementSurfaces
@@ -369,7 +443,7 @@ addLayersControls
   maxThicknessToMedialRatio 0.3;
   minMedialAxisAngle 90;
   nBufferCellsNoExtrude 0;
-  nLayerIter 50;
+  nLayerIter {layer_iter};
 }}
 meshQualityControls
 {{
@@ -451,50 +525,54 @@ numberOfSubdomains {n_cores};
 method          scotch;
 """)
 
-    _write(case_dir, "system/fvSolution", """\
-FoamFile { version 2.0; format ascii; class dictionary; object fvSolution; }
+    # GAMG requires cells_per_proc > nCellsInCoarsestLevel to build coarse levels.
+    # Scale down proportionally with core count so parallel runs don't fail.
+    gamg_coarse = max(10, 200 // max(1, n_cores))
+
+    _write(case_dir, "system/fvSolution", f"""\
+FoamFile {{ version 2.0; format ascii; class dictionary; object fvSolution; }}
 solvers
-{
+{{
   p
-  {
+  {{
     solver          GAMG;
     tolerance       1e-6;
     relTol          0.05;
     smoother        GaussSeidel;
-    nCellsInCoarsestLevel 200;
-  }
+    nCellsInCoarsestLevel {gamg_coarse};
+  }}
   U
-  {
+  {{
     solver          PBiCGStab;
     preconditioner  DILU;
     tolerance       1e-7;
     relTol          0.1;
-  }
+  }}
   "(k|omega|nut)"
-  {
+  {{
     solver          PBiCGStab;
     preconditioner  DILU;
     tolerance       1e-7;
     relTol          0.1;
-  }
-}
+  }}
+}}
 PIMPLE
-{
+{{
   nOuterCorrectors 1;
   nCorrectors      2;
   nNonOrthogonalCorrectors 1;
   residualControl
-  {
+  {{
     U               1e-4;
     p               1e-4;
     "(k|omega)"     1e-4;
-  }
-}
+  }}
+}}
 relaxationFactors
-{
-  fields      { p 0.3; }
-  equations   { U 0.7; k 0.7; omega 0.7; }
-}
+{{
+  fields      {{ p 0.3; }}
+  equations   {{ U 0.7; k 0.7; omega 0.7; }}
+}}
 """)
 
     _write(case_dir, "constant/transportProperties",
@@ -596,15 +674,15 @@ boundaryField
 
 def _check_runtime():
     """Raise RuntimeError if the required OpenFOAM runtime is not available."""
-    if _ON_LINUX:
+    if _OPENFOAM_AVAILABLE:
         r = subprocess.run(
-            ["bash", "-c", f"source {OPENFOAM_BASHRC} && blockMesh -help"],
+            ["bash", "-c", f"{_OPENFOAM_ENV_SETUP} && blockMesh -help"],
             capture_output=True,
         )
         if r.returncode not in (0, 1):
             raise RuntimeError(
-                "OpenFOAM 12 not found. Install it:\n"
-                "  https://openfoam.org/download/12-ubuntu/"
+                "OpenFOAM 13 not found. Install it:\n"
+                "  https://openfoam.org/download/13-ubuntu/"
             )
     else:
         r = subprocess.run(
@@ -618,43 +696,77 @@ def _check_runtime():
             )
 
 
-def _foam_run(case_dir: str, cmd: str, timeout_s: int):
-    """Dispatch to Docker (Windows) or native bash (Linux).
+def _foam_run(job_id: str, case_dir: str, cmd: str, timeout_s):
+    """Dispatch to native bash (if OpenFOAM installed) or Docker.
 
     Use {CASE} in cmd as a placeholder for the case directory path.
+    timeout_s=None means no deadline (run until complete).
     """
-    if _ON_LINUX:
-        return _native_run(case_dir, cmd, timeout_s)
-    return _docker_run(case_dir, cmd, timeout_s)
+    if _OPENFOAM_AVAILABLE:
+        return _native_run(job_id, case_dir, cmd, timeout_s)
+    return _docker_run(job_id, case_dir, cmd, timeout_s)
 
 
-def _native_run(case_dir: str, cmd: str, timeout_s: int):
-    actual_cmd = cmd.replace("{CASE}", case_dir)
-    full_cmd = f"source {OPENFOAM_BASHRC} && cd {case_dir} && {actual_cmd}"
-    result = subprocess.run(
-        ["bash", "-c", full_cmd],
-        capture_output=True, text=True, timeout=timeout_s,
+def _popen_run(job_id: str, argv: list, timeout_s) -> tuple:
+    """Run argv via Popen in a new process group; store handle for cancel_job."""
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True,
+        preexec_fn=os.setsid,   # own process group → killpg kills children too
     )
-    return result.returncode, result.stdout, result.stderr
+    with _JOBS_LOCK:
+        if job_id in _JOBS:
+            _JOBS[job_id]["current_proc"] = proc
+
+    try:
+        stdout, stderr = proc.communicate(
+            timeout=timeout_s if (timeout_s and timeout_s > 0) else None
+        )
+    except subprocess.TimeoutExpired:
+        _kill_proc(proc)
+        proc.wait()
+        raise RuntimeError(f"Process timed out after {timeout_s}s")
+    except Exception:
+        _kill_proc(proc)
+        proc.wait()
+        raise
+    finally:
+        with _JOBS_LOCK:
+            if job_id in _JOBS and _JOBS[job_id].get("current_proc") is proc:
+                _JOBS[job_id]["current_proc"] = None
+
+    # If the job was cancelled while communicate() was running, the proc was
+    # killed externally — _check_cancelled in the thread will surface the error.
+    return proc.returncode, stdout, stderr
 
 
-def _docker_run(case_dir: str, cmd: str, timeout_s: int):
+def _native_run(job_id: str, case_dir: str, cmd: str, timeout_s):
+    actual_cmd = cmd.replace("{CASE}", case_dir)
+    full_cmd = f"{_OPENFOAM_ENV_SETUP} && cd {case_dir} && {actual_cmd}"
+    return _popen_run(job_id, ["bash", "-c", full_cmd], timeout_s)
+
+
+def _docker_run(job_id: str, case_dir: str, cmd: str, timeout_s):
     posix_path = _to_docker_path(case_dir)
     actual_cmd = cmd.replace("{CASE}", "/case")
-    full_cmd = f"source /opt/openfoam12/etc/bashrc && cd /case && {actual_cmd}"
-    result = subprocess.run(
-        ["docker", "run", "--rm",
-         "-v", f"{posix_path}:/case",
-         DOCKER_IMAGE,
-         "bash", "-c", full_cmd],
-        capture_output=True, text=True, timeout=timeout_s,
-    )
-    return result.returncode, result.stdout, result.stderr
+    full_cmd = f"{_OPENFOAM_ENV_SETUP} && cd /case && {actual_cmd}"
+    return _popen_run(job_id, [
+        "docker", "run", "--rm",
+        "-v", f"{posix_path}:/case",
+        DOCKER_IMAGE,
+        "bash", "-c", full_cmd,
+    ], timeout_s)
 
 
 def _to_docker_path(path: str) -> str:
-    """Convert a Windows path to Docker-for-Desktop POSIX mount format."""
+    """Return a path suitable for a Docker -v mount.
+
+    On Linux/macOS paths are already POSIX; on Windows convert C:\\foo to /c/foo.
+    """
     p = Path(path)
+    if not p.drive:
+        return path
     drive = p.drive.lower().rstrip(":")
     rest = str(p.relative_to(p.anchor)).replace("\\", "/")
     return f"/{drive}/{rest}"
@@ -885,8 +997,14 @@ def _parse_forces(case_dir, chord_m, rho, v_ms):
         else:
             return {"cl": None, "cd": None, "ld": None}
 
-    # Find the latest time sub-dir
-    subdirs = sorted([d for d in os.listdir(forces_dir) if os.path.isdir(os.path.join(forces_dir, d))])
+    # Find the latest time sub-dir (numeric sort, not lexicographic)
+    def _as_float(s):
+        try:
+            return float(s)
+        except ValueError:
+            return 0.0
+    subdirs = sorted([d for d in os.listdir(forces_dir) if os.path.isdir(os.path.join(forces_dir, d))],
+                     key=_as_float)
     if not subdirs:
         return {"cl": None, "cd": None, "ld": None}
 
