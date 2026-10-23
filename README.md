@@ -16,8 +16,10 @@ drag, power, take-off speed, stall and cavitation margins, bending stress and de
 - Optionally add a **secondary foil** (rear stabiliser, canard or tandem foil) that carries part of
   the weight, using the same section as the main foil or its own profile.
 
-It runs entirely in the browser — no server, works offline once loaded. There is no hosted site
-yet; to run it on your own computer, see [Development](#development).
+It runs entirely in the browser — no install, no server, works offline once loaded.
+
+**Live site:** <https://roboticsclubatucf.github.io/Hydrofoil-Designer/> (published by GitHub
+Actions from `main`; see [Deploying](#deploying)).
 
 ---
 
@@ -314,10 +316,9 @@ public/examples/   NACA 63-412 example profile
 ### Deploying
 
 `.github/workflows/ci.yml` lints, type-checks, tests and builds every pull request, and on
-`main` tries to publish `dist/` to GitHub Pages. Pages is not enabled for this repository yet, so
-that deploy step fails and there is no live site. To enable it: **Settings → Pages → Build and
-deployment → Source: GitHub Actions**. The build uses relative paths, so it also works from any
-static file host.
+`main` publishes `dist/` to GitHub Pages at the live site above. For a fork, enable Pages once:
+**Settings → Pages → Build and deployment → Source: GitHub Actions**. The build uses relative
+paths, so it also works from any static file host.
 
 ## License
 
