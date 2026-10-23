@@ -1,296 +1,238 @@
-# PEP27 Hydrofoil Designer
+# Hydrofoil Designer
 
-A self-hosted web tool for designing hydrofoil profiles. Paste an airfoil `.dat` file, enter your craft's design parameters, and receive a full aerodynamic sizing report, a **STEP file** ready to import into any major 3D modeling software, an interactive **3D assembly preview**, **polar analysis charts**, **2D vortex panel flow visualization**, and optional **OpenFOAM CFD simulation** with animated results.
+An interactive, browser-based designer for hydrofoils. Paste a section profile from
+[airfoiltools.com](http://airfoiltools.com/), type in **only what you know or want**, and the
+designer works out everything else — span, chord, area, angle of attack, lift coefficient,
+drag, power, take-off speed, stall and cavitation margins, bending stress and deflection.
 
----
+- Fields you fill in are **entered**; everything that follows from them is **calculated**,
+  greyed out and locked.
+- Anything still free is **optimised** to meet your requirements (or a sensible default is
+  **assumed**), and the app tells you which limits are shaping the design.
+- Every value has an **ƒ** button that shows exactly how it was found: the formula, the numbers
+  substituted, the method, and links to the values it came from and the ones it feeds.
+- The proposed foil is then **simulated**: section pressures, spanwise loading, bending,
+  and a speed sweep at constant load.
 
-## Features
+It runs entirely in the browser — no install, no server, works offline once loaded.
 
-- Paste any standard airfoil `.dat` coordinate file (Selig format)
-- Automatically extracts **max thickness** and **max camber** with chord locations
-- Calculates chord, span, planform area, aspect ratio, lift coefficient, and angle of attack using **Prandtl's lifting-line theory**
-- Supports independent front and rear foil profiles (or use the same profile for both)
-- Two sizing modes per foil: **thickness-constrained** (drives chord from a max thickness limit) or **direct chord**
-- Optional advanced constraints: min/max span, chord, and aspect ratio per foil
-- **Error and warning system** — constraint violations and marginal conditions reported with actionable fix suggestions
-- **Strut length** calculated dynamically from hull clearance + submergence factor × chord
-- **NeuralFoil polar analysis** — CL vs α lift curve and CL/CD drag polar plots with operating-point markers
-- **Vortex panel method** — real-time 2D flow field visualization (pressure and velocity) with animated particle tracers
-- Generates a **STEP solid** of each foil for direct import into CAD software
-- **Interactive 3D assembly preview** — foils, struts, and hull rendered in-browser with drag/zoom controls
-- **OpenFOAM CFD simulation** — full viscous 2D CFD running natively on Linux (OpenFOAM 13) or via Docker on Windows/macOS, with animated 2D color-map and 3D streamline visualization rendered client-side
-- **Settings export/import** — save and restore all form values as a JSON file
-- Light and **dark mode** support
-- Unit-flexible inputs: N / lbs / kg, km/h / m/s / knots, fresh / brackish / salt / custom water density
+**Live site:** `https://roboticsclubatucf.github.io/Hydrofoil-Designer/` (published by GitHub
+Actions from `main`; see [Deploying](#deploying)).
 
 ---
 
-## Setup
+## Using it
 
-### Requirements
+### 1 · Section
 
-- Python 3.10+
-- Windows, macOS, or Linux
-- **OpenFOAM 13** (Linux — native, no Docker needed) or **Docker Desktop** (Windows/macOS — required only for CFD)
+1. On airfoiltools.com, find your section (e.g. _NACA 63-412_) and open either
+   **Lednicer format dat file** or **Selig format dat file**.
+2. Paste the text into the Section box, upload the `.dat` file, or drop it on the box.
+   Both formats are detected automatically; coordinates that are scaled, shifted, rotated or
+   listed lower-surface-first are normalised (you are told when that happens).
+3. _Optional but recommended:_ on the same airfoiltools page, open one or more XFoil polars
+   (e.g. Re 200 000, 500 000 and 1 000 000, Ncrit 9), and paste each polar's CSV under
+   **Polar data**. With polars the section lift, drag and stall come from XFoil data,
+   interpolated to the foil's Reynolds number. Without them they are estimated from the shape
+   (see [Accuracy](#accuracy)).
 
-### Install
+`Load example` loads the NACA 63-412 profile.
 
-```bash
-# Clone or copy the project folder, then:
-cd Hydrofoil-Designer
+### 2 · Design
 
-# Create a virtual environment
-python -m venv .venv
+Every field starts blank. Fill in whatever you know, in any order and in any unit — for example:
 
-# Activate it
-# Windows (PowerShell):
-.venv\Scripts\Activate.ps1
-# macOS / Linux:
-source .venv/bin/activate
+| You know…                          | You get…                                                           |
+| ---------------------------------- | ------------------------------------------------------------------ |
+| craft mass, cruise speed           | a complete foil, optimised for your requirements                   |
+| mass, speed, span                  | chord, area, angle, drag… with only the aspect ratio optimised     |
+| mass, speed, span, angle of attack | everything — span, angle and the lift equation are solved together |
+| mass, speed, span, safety factor   | the chord needed for that safety factor                            |
+| mass, take-off speed               | the area needed to lift off at that speed                          |
+| span and chord                     | area, aspect ratio and the section's geometry                      |
 
-# Install dependencies
-pip install -r requirements.txt
-```
+Field colours:
 
-#### Linux: install OpenFOAM 13 natively (Ubuntu 25.10 / 26.04)
+| State                               | Meaning                                                                                                                                          |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **entered** (blue outline)          | you typed it — press <kbd>Esc</kbd> or empty the box to clear it                                                                                 |
+| **calculated** (grey)               | follows from your entries; locked — hover to see which entries fix it, clear one of them to type here                                            |
+| **assumed** (violet, italic)        | a default used because it unlocks a calculation (water temperature 20 °C, full load share, deep water, sea-level air pressure) — type to replace |
+| **optimised** (green)               | chosen by the optimiser for your objective within your requirements — type to replace                                                            |
+| **from section / material / fixed** | read from the profile, the selected material, or the planform shape                                                                              |
+| **conflict** (red)                  | your entries contradict each other (usually after switching planform); the status panel says which to clear                                      |
 
-```bash
-sudo wget -O /etc/apt/trusted.gpg.d/openfoam.asc https://dl.openfoam.org/gpg.key
-sudo add-apt-repository "deb http://dl.openfoam.org/ubuntu questing main"
-sudo apt-get update
-sudo apt-get install -y openfoam13
-```
+Planform shape (rectangular, tapered, elliptical), material and water type are chosen with the
+selectors in their groups. Add a **foil depth** to include the free-surface lift loss and
+the cavitation check.
 
-This installs to `/opt/openfoam13/` — the path the app expects. No Docker required.
+### 3 · Requirements
 
-For other Ubuntu versions replace `questing` with the codename matching your release (e.g. `noble` for 24.04). See [openfoam.org/download/13-ubuntu](https://openfoam.org/download/13-ubuntu/) for the full list.
+Limits applied whenever the designer fills in something you left blank: maximum span, root
+chord range, minimum root thickness, minimum safety factor (default 1.5), maximum take-off
+speed, minimum stall margin (default 2°), aspect-ratio range (default 3–12), maximum tip
+deflection, and no cavitation at cruise. Choose the objective: **minimum drag at cruise**,
+**lowest take-off speed** or **lightest foil**. Each requirement shows ✓ met, ✕ not met, and a ring
+when it is the limit shaping the design. If they cannot all be met, the closest design is shown
+with what failed.
 
-#### Windows / macOS: use Docker
+### Results
 
-```bash
-# Build the OpenFOAM Docker image (~5–10 min, only needed once)
-docker build -t pep27-openfoam .
-```
+- **Overview** — dimensioned planform drawing and the key numbers.
+- **Section** — pressure distribution at the most-loaded station (with the cavitation threshold
+  −σ when a depth is given), section lift curve and drag curve with the cruise point.
+- **Span & structure** — local lift coefficient against the section maximum, lift per unit span,
+  bending moment, bending stress against material strength, deflection.
+- **Speed sweep** — angle of attack, drag, power, L/D and cavitation margin against speed, at
+  constant load, with take-off, cruise and cavitation-inception speeds marked.
+- **Calculations** — every value in order with its worked calculation; copy or download as
+  Markdown, or print.
+- **Export** — DXF (root and tip sections plus half planform, mm, separate layers), XYZ point
+  files for CAD splines, a CSV of both sections, the calculation report, the design file and the
+  normalised profile.
 
-### Run
+Every chart has a crosshair readout (mouse or ←/→ keys) and a **Show table** view.
 
-```bash
-python app.py
-```
-
-Open `http://localhost:5000` in your browser.
-
-For production (multi-user hosting):
-
-```bash
-pip install gunicorn
-gunicorn -w 4 -b 0.0.0.0:5000 app:app
-```
-
----
-
-## Usage
-
-### 1. Paste a `.dat` profile
-
-Paste the raw text of a standard airfoil coordinate file into the **Front Foil Profile** box.
-An example NACA 4418 file is included — click **"Load NACA 4418 example"** to pre-fill it.
-
-**Expected format (Selig):**
-
-```
-NACA 4418
-1.0000     0.0019
-0.9500     0.0189
-...
-0.0000     0.0000
-0.0125    -0.0211
-...
-1.0000    -0.0019
-```
-
-- Line 1: profile name
-- Remaining lines: X Y coordinate pairs (normalized 0–1)
-- Upper surface (Y ≥ 0) listed first, trailing edge → leading edge
-- Lower surface (Y < 0) listed second, leading edge → trailing edge
-
-### 2. Set the rear foil
-
-Choose **"Same profile as front"** or **"Different profile"** and paste a second `.dat` file if needed.
-
-### 3. Enter design parameters
-
-| Parameter | Description |
-|---|---|
-| Total craft weight | Full loaded weight of the craft |
-| Takeoff speed | Speed at which the hull leaves the water |
-| Water type | Sets fluid density (fresh / brackish / salt / custom) |
-| Front foil load share | Percentage of total lift carried by the front foil |
-| Target hull clearance | Desired ride height above the waterline |
-| Submergence factor *n* | Multiplier for chord depth in strut length calculation (default 1.5) |
-| Sizing mode | Thickness limit (drives chord) or direct chord input, per foil |
-| Max thickness / Chord | Structural thickness limit or explicit chord length, per foil |
-| Front / rear C_L | Target lift coefficient for each foil |
-| Oswald efficiency *e* | Planform efficiency factor (default 0.9) |
-
-**Advanced Constraints** (optional, collapsible):
-
-Each foil supports optional min/max bounds on span, chord, and aspect ratio. Leave blank to unconstrain.
-
-### 4. Calculate
-
-Click **Calculate & Preview**. The tool displays for each foil:
-
-- Profile summary (thickness %, camber %, chord locations, strut length)
-- Airfoil shape plot
-- Full design table (chord, span, area, AR, AoA, lift slope, zero-lift angle, dynamic pressure)
-- **Lift curve** (CL vs α) and **drag polar** (CL vs CD) from NeuralFoil, with operating-point marker
-- **2D flow visualization** — vortex panel method pressure/velocity field with animated particle streamlines
-- Any **errors** (constraint violations, stall risk) with fix suggestions
-- Any **warnings** (marginal but feasible conditions) with suggestions
-- **Download STEP** button
-
-### 5. 3D Assembly Preview
-
-An interactive 3D scene appears below the results showing the full hydrofoil assembly — front and rear foils, struts, and hull. Controls:
-
-- **Left-drag** — orbit
-- **Scroll** — zoom
-- **Right-drag / Shift-drag** — pan
-
-Sliders and toggles in the sidebar let you adjust hull clearance and foil separation in real time, and toggle the waterline plane, labels, wireframe, and auto-rotate.
-
-### 6. OpenFOAM CFD Simulation
-
-After calculating, a **CFD Simulation** panel appears automatically below the results. This runs a full viscous 2D CFD simulation using OpenFOAM — natively on Linux or via Docker on Windows/macOS.
-
-#### One-time setup
-
-**Linux** — install OpenFOAM 13 via apt (see [Setup](#setup) above). No Docker needed.
-
-**Windows / macOS** — install Docker Desktop and build the image:
-
-```bash
-docker build -t pep27-openfoam .
-```
-
-Verify it built:
-```bash
-docker image ls pep27-openfoam
-```
-
-#### Running a simulation
-
-1. Click **Calculate & Preview** with your foil parameters
-2. Scroll down to the **CFD Simulation** panel
-3. Select **Front** or **Rear** foil from the dropdown
-4. Set the **Resolution** slider:
-   | Level | Grid | Est. time |
-   |---|---|---|
-   | Low | ~60×40 cells | ~2 min |
-   | Medium | ~120×80 cells | ~5 min |
-   | High | ~200×120 cells | ~15 min |
-5. (Optional) Expand **Hardware Settings** to adjust CPU core count (default: 6) and maximum timeout.
-6. Click **Run CFD**
-
-A progress bar tracks each solver stage: STL generation → blockMesh → snappyHexMesh → checkMesh → decomposePar → simpleFoam → reconstructPar → post-processing.
-
-#### Results
-
-- **Force badges** — C_L, C_D, L/D ratio, and solver iteration count
-- **Field selector** — switch between Pressure (Cp) and Velocity magnitude
-- **2D color-map canvas** (left) — animated particle tracers show the flow; solid foil masking with pressure-aware outline; HiDPI-corrected rendering
-- **3D streamline scene** (right) — foil colored by Cp, RK2-integrated streamlines (2% chord step) with surface collision detection; drag to orbit (auto-rotate disabled for user control)
-- **Convergence note** — max initial residual tracker; a yellow warning banner appears if the solver diverged or produced non-physical values (C_L > 100, NaN, Inf) — a clean "Diverged" status is shown rather than bad data
-
-#### Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| "Docker is not running" error | Docker Desktop not started (Windows/macOS) | Start Docker Desktop and wait for the whale icon |
-| "Docker image not found" error | Image not built yet | Run `docker build -t pep27-openfoam .` from `Hydrofoil-Designer/` |
-| `libscotch.so` / shared library error (Linux) | OpenFOAM not installed or wrong version | Install OpenFOAM 13 via apt; see Setup above |
-| "Diverged" status badge | Non-physical result (high AoA, coarse mesh) | Try Low resolution first; reduce AoA if divergence persists |
-| Slow runs on low-core machines | Default core count too high | Open Hardware Settings and lower the CPU core count |
-| No CFD panel visible | Calculate hasn't been run yet | Click Calculate & Preview first |
-
-**CFD method:** simpleFoam (steady-state incompressible RANS), k-ω SST turbulence model, snappyHexMesh body-fitted mesh. The airfoil geometry is rotated by the operating AoA so the freestream stays horizontal. The domain spans −5c to +15c in X and ±3c in Y, using a thin 3D slab with `symmetry` patches in Z for numerical stability. The simulation runs in parallel across multiple cores (default 6) using `mpirun`; results are reconstructed before post-processing. Pressure solver: GAMG; momentum: pure upwind; relaxation factors: p=0.3, U/k/ω=0.7.
-
-### 7. Import into your CAD software
-
-Open or import the downloaded `.step` file in any 3D modeling software that supports STEP (Fusion 360, FreeCAD, SolidWorks, Onshape, etc.).
-The foil appears as a solid body with the correct cross-section and full span.
-
-### 8. Settings export / import
-
-Use **Export Settings** to save all current form values as a JSON file, and **Import Settings** to restore a previously saved session.
+**Save** downloads the design as JSON (reopen with **Open**); **Share link** copies a URL that
+contains the whole design; the current design is also kept in the browser between visits.
+**SI / US** switches all units; any field's unit can also be changed individually.
 
 ---
 
-## Calculation Method
+## How it works
 
-```
-L = ½ · ρ · V² · S · CL                      (lift equation)
+### The solver
 
-chord = max_thickness_mm / (thickness% / 100)  (structural constraint)
+The design is a system of about 60 variables linked by about 45 equations (the main ones are listed below). Each equation
+knows how to be rearranged for each of its variables, or can be solved numerically when it
+cannot. On every change:
 
-S = L / (½ · ρ · V² · CL)                     (required planform area)
+1. **Structure.** Your entries, the section data and the material are the knowns. The remaining
+   equations and unknowns form a bipartite graph; a maximum matching plus a
+   Dulmage–Mendelsohn decomposition finds which unknowns are determined, and Tarjan's
+   algorithm orders them into blocks (block-lower-triangular form, as used by equation-based
+   modelling tools).
+2. **Solve.** One-equation blocks are solved in closed form (or by Brent's method on a
+   bracketing scan); blocks of equations that share unknowns are solved simultaneously by damped
+   Newton–Raphson (Levenberg–Marquardt) in log space, then verified by back-substitution. Each
+   result records its formula, substitution and inputs — that is what the **ƒ** panels show.
+3. **Reynolds number.** Section data depends on Re, which depends on chord, so the solve is
+   repeated with updated section data until Re settles (usually 1–3 passes).
+4. **Assumptions** are added only when they unlock another calculation, so a blank form stays blank.
+5. **Fitting.** If load and a speed are known but the design is not yet determined, the free
+   choices (aspect ratio, angle of attack, taper ratio, then span/chord) are picked in turn —
+   only ones that actually unlock results — and optimised with Nelder–Mead over bounded
+   coordinates, minimising the objective plus penalties for any unmet requirement.
+6. **Checks.** Every fully known equation is re-checked; contradictions are reported as conflicts.
 
-span = S / chord
+All of this runs in a Web Worker so typing stays responsive.
 
-a = a₀ / (1 + 57.3·a₀ / (π·e·AR))            (Prandtl lifting-line, 3D slope)
+### Main equations
 
-α = CL / a + α_L=0                             (angle of attack)
+|                             |                                                                   |
+| --------------------------- | ----------------------------------------------------------------- |
+| Lift from weight            | L = s_L · m · g                                                   |
+| Dynamic pressure            | q = ½ ρ V²                                                        |
+| Lift                        | L = q S C_L                                                       |
+| Planform                    | S = b c̄, AR = b²/S, c̄ and MAC from the planform law, c_t = λ c_r  |
+| Reynolds number             | Re = V · MAC / ν                                                  |
+| Lift curve                  | C_L = k_FS · C_Lα(AR, λ, a₀) · (α − α_L0)                         |
+| Induced drag                | C_Di = C_L² / (π e AR)                                            |
+| Profile drag                | C_Dp = (1/S) ∫ c_d(c_l(y), Re(y)) c(y) dy (strip integration)     |
+| Drag, power                 | D = q S (C_Dp + C_Di), P = D V                                    |
+| Max lift (critical section) | C_L,max = c_l,max / k_peak                                        |
+| Take-off speed              | L = ½ ρ V_TO² S C_L,max                                           |
+| Stall                       | α_stall = α_L0 + C_L,max / (k_FS C_Lα), margin = α_stall − α      |
+| Free surface                | k_FS = (16 (h/c)² + 1) / (16 (h/c)² + 2)                          |
+| Cavitation                  | σ = (p_atm + ρ g h − p_v) / q, margin = σ + C_p,min(c_l,peak)     |
+| Bending                     | M_r = (L/2)(b/2) η̄, σ_max = k_σ M_r / (Z₁ c_r³), SF = σ_y / σ_max |
+| Deflection                  | δ = ∬ M / (E I₁ c⁴) dy dy (tapered beam)                          |
+| Mass                        | m_f = ρ_m A₁ ∫ c² dy                                              |
 
-strut_length = hull_clearance + n × chord      (strut sizing)
-```
+### Methods and references
 
-Where `a₀ ≈ 0.10966 /°` (thin airfoil theory, 2π per radian) and `α_L=0 ≈ −camber%` degrees.
+| Topic                          | Method                                                                                                                                                                                                                                                                 |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Profile                        | Arc-length cubic spline through the points; cosine re-paneling (200 panels); thickness, camber, leading-edge radius (spline curvature), trailing-edge gap/angle; area, centroid, second moment and section modulus of the solid section by polygon integration         |
+| Inviscid section               | Linear-strength vortex panel method with Kutta condition, solved once for two freestream directions and superposed for any angle (Katz & Plotkin, _Low-Speed Aerodynamics_, §11.4). Validated against the exact Joukowski solution and thin-aerofoil theory            |
+| Boundary layer (estimate mode) | Thwaites' method with Cebeci–Bradshaw fits; Michel's transition criterion, or transition at laminar separation; Head's entrainment method with Ludwieg–Tillmann skin friction; Squire–Young drag. Max lift where upper-surface turbulent separation reaches 92 % chord |
+| Polars (polar mode)            | airfoiltools CSV or XFoil text; zero-lift angle and slope from a linear fit of the attached range; drag from the attached branch; interpolation in log Re                                                                                                              |
+| Finite foil                    | Prandtl lifting line, Glauert series with 24 odd terms (Anderson, _Fundamentals of Aerodynamics_, §5.3) → C_Lα, e, spanwise c_l, load centroid                                                                                                                         |
+| Free surface                   | High-Froude image-vortex lift factor (Hoerner & Borst, _Fluid-Dynamic Lift_, ch. 10)                                                                                                                                                                                   |
+| Cavitation                     | Panel-method C_p,min at the most-loaded station's c_l; inception speed by root-finding at constant lift                                                                                                                                                                |
+| Water                          | Pure-water density: Kell (1975); viscosity and seawater corrections: Sharqawy, Lienhard & Zubair (2010); vapour pressure: Buck (1996)                                                                                                                                  |
+| Structure                      | Each half-span a cantilever from a centre strut (T-foil), lifting-line load, solid section, Euler–Bernoulli bending                                                                                                                                                    |
+
+### Accuracy
+
+Checked by the unit tests (`npm test`):
+
+- Panel method: Joukowski lift within 1.5 %; NACA 2412/4412 zero-lift angles within 0.2° of
+  thin-aerofoil theory; converged with panel count.
+- Boundary layer: laminar flat plate within 1 % of Blasius.
+- Lifting line: elliptical e = 1 and exact lift slope; rectangular AR 6 δ ≈ 0.05.
+- Estimate mode vs. XFoil polars for NACA 63-412 at Re 0.5–1 M: zero-lift angle within 0.5°,
+  lift slope within 10 %, max lift within 15 %, drag within 30 % (on the high side).
+- Water properties against ITTC tables; a fully specified design against an independent hand
+  calculation.
+
+### Limitations
+
+- Straight, untwisted, unswept foils; one section along the span; a single foil (enter the
+  load share for a main foil that carries part of the weight). No strut, fuselage, wave or spray drag.
+- Lift curve is linear up to the (conservative) linear stall estimate; real foils round off near stall.
+- Estimate mode has no viscous–inviscid coupling — paste polars for accurate drag and max lift,
+  especially below Re ≈ 2 × 10⁵ where laminar separation bubbles dominate.
+- The free-surface factor is the high-speed (high Froude number) limit; ventilation is only flagged.
+- Structure assumes a solid foil of one isotropic material; laminates and prints depend on layup
+  and orientation.
+- The browser cannot fetch from airfoiltools.com directly (that site is HTTP-only and sends no CORS
+  headers), so data is pasted or uploaded.
 
 ---
 
-## Project Structure
+## Development
 
-```
-Hydrofoil-Designer/
-├── app.py              # Flask routes: GET /, POST /api/calculate, POST /api/step,
-│                       #   POST /api/cfd, GET /api/cfd/<job_id>
-├── dat_parser.py       # .dat parsing and profile parameter extraction
-├── foil_math.py        # Aerodynamic calculations and constraint checks
-├── foil_polar.py       # NeuralFoil polar analysis (CL/CD vs α)
-├── panel_method.py     # 2D vortex panel method flow field solver
-├── foam_runner.py      # OpenFOAM CFD orchestration (STL gen, case files, native Linux
-│                       #   or Docker fallback, field parsing, async job system)
-├── step_generator.py   # OCP: 2D profile → 3D STEP file
-├── requirements.txt
-├── templates/
-│   └── index.html      # Single-page UI (vanilla HTML/CSS/JS + Three.js)
-├── static/
-│   └── style.css       # Navy/blue maritime theme, light/dark mode
-└── example_data/
-    └── naca4418.dat    # NACA 4418 example profile
+Requires Node 22+.
+
+```bash
+npm ci
+npm run dev        # http://localhost:5173
+npm test           # unit tests (Vitest)
+npm run e2e        # browser tests (Playwright; builds and serves the app)
+npm run lint
+npm run typecheck
+npm run build      # static site in dist/
 ```
 
----
+```
+src/
+  physics/         pure TypeScript, no UI
+    profile/       parsing, geometry, panel method, boundary layer, polars, section model
+    wing/          planform laws, lifting line
+    hydro/         free surface, cavitation
+    structure/     materials, beam bending
+    fluid.ts       water properties
+    units.ts       units and conversions
+    numeric.ts     splines, root finding, linear algebra, Nelder–Mead
+  solver/          variables, equations, decomposition/solve engine, assumptions, optimiser
+  simulate/        span loading, section plots, speed sweep
+  export/          DXF, XYZ/CSV, Markdown report
+  worker/          Web Worker running the section model, solver and simulation
+  state/           Zustand store, autosave, share links
+  ui/              React components and SVG charts
+tests/             unit tests
+e2e/               Playwright tests
+public/examples/   NACA 63-412 example profile
+```
 
-## API Reference
+### Deploying
 
-| Method | Route | Description |
-|---|---|---|
-| `GET` | `/` | Serve the UI |
-| `POST` | `/api/calculate` | Sizing + polar + panel method; returns design dict for front and rear foils |
-| `POST` | `/api/step` | Generate and download STEP file for one foil |
-| `POST` | `/api/cfd` | Submit an OpenFOAM CFD job; returns `{"job_id": "..."}` (HTTP 202) |
-| `GET` | `/api/cfd/<job_id>` | Poll job status; returns `{status, progress, message, result?, error_detail?}` |
+`.github/workflows/ci.yml` lints, type-checks, tests and builds every pull request, and on
+`main` publishes `dist/` to GitHub Pages. One-time setup: **Settings → Pages → Build and
+deployment → Source: GitHub Actions**. The build uses relative paths, so it also works from any
+static file host.
 
----
+## License
 
-## Verification Baseline
-
-Using the PEP27 design spec (890 N craft, 70/30 load split, 3.61 m/s takeoff, ρ = 1010 kg/m³ brackish, 30 mm max front thickness, C_L = 0.8, NACA 4418):
-
-| Output | Expected |
-|---|---|
-| Chord | 166.7 mm |
-| Span | 710.0 mm |
-| Angle of attack | 7.1° |
+MIT — see [LICENSE](LICENSE).
