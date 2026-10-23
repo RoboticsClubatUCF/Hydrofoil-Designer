@@ -3,7 +3,10 @@ import type { GroupId, VarDef } from './types';
 
 const D = Math.PI / 180;
 
-type Def = Omit<VarDef, 'positive' | 'input'> & { positive?: boolean; input?: boolean };
+type Def = Omit<VarDef, 'positive' | 'input' | 'foil' | 'base'> & {
+  positive?: boolean;
+  input?: boolean;
+};
 
 const defs: Def[] = [
   // ---- water ----
@@ -736,13 +739,145 @@ const defs: Def[] = [
   },
 ];
 
-export const VARS: VarDef[] = defs.map((d) => ({
+// ---- craft totals (only with a secondary foil) ----
+const craftDefs: Def[] = [
+  {
+    id: 'VtoCraft',
+    label: 'Craft take-off speed',
+    symbol: 'V_{TO,craft}',
+    quantity: 'speed',
+    group: 'craft',
+    help: 'Speed at which both foils can carry their share of the load: the higher of the two take-off speeds.',
+    typical: 3,
+    range: [0.05, 80],
+    input: false,
+  },
+  {
+    id: 'Dtot',
+    label: 'Total drag at cruise',
+    symbol: 'D_{tot}',
+    quantity: 'force',
+    group: 'craft',
+    help: 'Drag of both foils at cruise (no strut, fuselage or hull).',
+    typical: 25,
+    range: [1e-4, 1e6],
+    input: false,
+  },
+  {
+    id: 'Ptot',
+    label: 'Total power to overcome drag',
+    symbol: 'P_{tot}',
+    quantity: 'power',
+    group: 'craft',
+    help: 'Total drag × speed for both foils.',
+    typical: 120,
+    range: [1e-4, 1e8],
+    input: false,
+  },
+  {
+    id: 'LDtot',
+    label: 'Craft lift ÷ drag',
+    symbol: '(L/D)_{tot}',
+    quantity: 'ratio',
+    group: 'craft',
+    help: 'Total lift of both foils ÷ their total drag at cruise.',
+    typical: 25,
+    range: [0.1, 400],
+    input: false,
+  },
+  {
+    id: 'massTot',
+    label: 'Total foil mass',
+    symbol: 'm_{f,tot}',
+    quantity: 'mass',
+    group: 'craft',
+    help: 'Mass of both solid foil wings (no strut or fuselage).',
+    typical: 1.2,
+    range: [1e-5, 1e5],
+    input: false,
+  },
+  {
+    id: 'VcavCraft',
+    label: 'Craft cavitation inception speed',
+    symbol: 'V_{cav,craft}',
+    quantity: 'speed',
+    group: 'craft',
+    help: 'The lower of the two foils’ cavitation inception speeds.',
+    typical: 15,
+    range: [0.5, 80],
+    input: false,
+  },
+];
+
+/** Shared by both foils: water, craft mass, cruise speed and the foil material. */
+const SHARED = new Set(['T', 'rho', 'nu', 'pv', 'patm', 'm', 'V', 'q', 'E', 'sy', 'rhoM']);
+
+const SECOND_LABEL: Record<string, string> = { share: 'Load share on secondary foil' };
+const SECOND_HELP: Record<string, string> = {
+  share: 'Fraction of the weight the secondary foil carries; the main foil carries the rest.',
+};
+const SECOND_SYMBOL: Record<string, string> = {
+  hc: 'h_2/\\bar c_2',
+  tc: '(t/c)_2',
+  LD: 'L_2/D_2',
+  cavMargin: '\\sigma_2 + C_{p,min,2}',
+  deflRatio: '\\delta_{tip,2}/(b_2/2)',
+};
+
+/** Symbol of the secondary-foil twin: a "2" added to the subscript. */
+function secondSymbol(id: string, s: string): string {
+  if (SECOND_SYMBOL[id]) return SECOND_SYMBOL[id];
+  const braced = s.match(/^(.*)_\{([^{}]*)\}$/);
+  if (braced) return `${braced[1]}_{${braced[2]},2}`;
+  const single = s.match(/^(.*)_(\\[A-Za-z]+|[A-Za-z0-9])$/);
+  if (single) return `${single[1]}_{${single[2]},2}`;
+  return `${s}_2`;
+}
+
+const full = (d: Def, foil: 0 | 1 | 2, base = d.id): VarDef => ({
   ...d,
   positive: d.positive ?? true,
   input: d.input ?? true,
-}));
+  foil,
+  base,
+});
+
+const mainVars = defs.map((d) => full(d, SHARED.has(d.id) ? 0 : 1));
+const secondVars = mainVars
+  .filter((d) => d.foil === 1)
+  .map((d) => ({
+    ...d,
+    id: `${d.id}2`,
+    label: SECOND_LABEL[d.id] ?? `${d.label} (secondary)`,
+    symbol: secondSymbol(d.id, d.symbol),
+    help: SECOND_HELP[d.id] ?? d.help,
+    typical: d.id === 'share' ? 0.2 : d.typical,
+    foil: 2 as const,
+    base: d.id,
+  }));
+
+export const VARS: VarDef[] = [...mainVars, ...secondVars, ...craftDefs.map((d) => full(d, 0))];
 
 export const VAR: Record<string, VarDef> = Object.fromEntries(VARS.map((v) => [v.id, v]));
+
+/** Ids of the main-foil variables that have a secondary-foil twin. */
+export const FOIL_IDS: string[] = mainVars.filter((d) => d.foil === 1).map((d) => d.id);
+
+/** The variable for `base` on the given foil (shared variables are the same on both). */
+export function foilId(base: string, foil: 1 | 2): string {
+  return foil === 2 && VAR[base]?.foil === 1 ? `${base}2` : base;
+}
+
+/** Values seen from one foil: on foil 2 each main-foil id reads its secondary twin. */
+export function foilValues(v: Record<string, number>, foil: 1 | 2): Record<string, number> {
+  if (foil === 1) return v;
+  const out = { ...v };
+  for (const id of FOIL_IDS) {
+    if (v[`${id}2`] === undefined) delete out[id];
+    else out[id] = v[`${id}2`];
+  }
+  return out;
+}
 
 export const GROUPS: { id: GroupId; title: string; blurb: string }[] = [
   { id: 'load', title: 'Load', blurb: 'What the foil has to hold up.' },
@@ -756,6 +891,7 @@ export const GROUPS: { id: GroupId; title: string; blurb: string }[] = [
   { id: 'performance', title: 'Performance', blurb: 'Drag, efficiency, power and stall.' },
   { id: 'surface', title: 'Cavitation', blurb: 'Will the water boil on the suction side?' },
   { id: 'structure', title: 'Structure', blurb: 'Bending of a solid foil on a centre strut.' },
+  { id: 'craft', title: 'Both foils', blurb: 'Totals for the main and secondary foil together.' },
   { id: 'water', title: 'Water', blurb: 'Fluid properties.' },
   { id: 'section', title: 'From the section', blurb: 'Derived from the pasted profile.' },
 ];

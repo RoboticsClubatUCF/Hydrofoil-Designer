@@ -6,6 +6,8 @@ import type { Status } from '../../solver/types';
 import { displayNumber, parseTyped } from '../format';
 import { rootInputs } from '../derive';
 import { DerivationView } from './Derivation';
+import { Help } from './Help';
+import { FIELD_HELP } from '../help';
 
 const STATE_LABEL: Partial<Record<Status, string>> = {
   input: 'entered',
@@ -18,8 +20,9 @@ const STATE_LABEL: Partial<Record<Status, string>> = {
   conflict: 'conflict',
 };
 
-export function Field({ id, usedBy }: { id: string; usedBy: string[] }) {
+export function Field({ id, usedBy, label }: { id: string; usedBy: string[]; label?: string }) {
   const def = VAR[id];
+  const name = label ?? def.label;
   const store = useStore();
   const { result, inputs, flash, setInput, setUnit } = store;
   const [text, setText] = useState<string | null>(null); // non-null while the user is typing
@@ -49,6 +52,22 @@ export function Field({ id, usedBy }: { id: string; usedBy: string[] }) {
     title = `${status === 'assumed' ? 'Assumed' : 'Chosen by the optimiser'} — type to replace it with your own value.`;
   }
 
+  // plain explanation, plus what the colour of this box means right now
+  let note = '';
+  if (status === 'calculated')
+    note =
+      'Worked out from your other values, so it is locked. To type your own, clear one of the values it comes from (press ƒ to see which).';
+  else if (status === 'assumed')
+    note = 'This is a starting guess. Type over it to use your own value.';
+  else if (status === 'optimised')
+    note = 'Picked by the program to best meet your requirements. Type over it to choose your own.';
+  else if (status === 'section') note = 'Read from the foil shape in step 1.';
+  else if (status === 'material') note = 'Set by the material you picked under Structure.';
+  else if (status === 'conflict')
+    note = 'Your values disagree here. Clear one of the values you typed to fix it.';
+  else if (status === 'unknown' && def.input)
+    note = 'Leave it blank and it will be filled in once enough is known, or type your own.';
+
   const commit = (t: string) => {
     const v = parseTyped(t);
     if (v === null) setInput(id, null);
@@ -63,8 +82,14 @@ export function Field({ id, usedBy }: { id: string; usedBy: string[] }) {
   return (
     <>
       <div className={`field${flash === id ? ' flash' : ''}`} id={`field-${id}`}>
-        <div className="field-label" title={def.help}>
-          <label htmlFor={`in-${id}`}>{def.label}</label>
+        <div className="field-label">
+          <span className="field-name">
+            <label htmlFor={`in-${id}`}>{name}</label>
+            <Help label={name}>
+              <p>{FIELD_HELP[id] ?? FIELD_HELP[def.base] ?? def.help}</p>
+              {note && <p className="help-note">{note}</p>}
+            </Help>
+          </span>
           <span className={`state ${status}`}>{STATE_LABEL[status] ?? ''}</span>
         </div>
         <input
@@ -101,7 +126,7 @@ export function Field({ id, usedBy }: { id: string; usedBy: string[] }) {
         {units.length > 1 ? (
           <select
             className="unit"
-            aria-label={`${def.label} unit`}
+            aria-label={`${name} unit`}
             value={unit.id}
             onChange={(e) => setUnit(id, e.target.value)}
           >
@@ -117,7 +142,7 @@ export function Field({ id, usedBy }: { id: string; usedBy: string[] }) {
         <button
           className="how"
           aria-expanded={open}
-          aria-label={`How ${def.label.toLowerCase()} was found`}
+          aria-label={`How ${name.toLowerCase()} was found`}
           title={d ? 'Show how this value was found' : 'No value yet'}
           disabled={!d}
           onClick={() => setOpen((o) => !o)}

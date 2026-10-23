@@ -7,6 +7,10 @@ interface Props {
   tipChord: number | null;
   unitId?: string;
   quantity?: Quantity;
+  /** draw at the scale of this span, so foils of different sizes compare */
+  refSpan?: number;
+  /** name of the foil in the accessible label */
+  name?: string;
 }
 
 /** Top view of the full foil with span and chord dimensions. Flow comes from the top of the drawing. */
@@ -17,10 +21,12 @@ export function PlanformView({
   tipChord,
   unitId,
   quantity = 'length',
+  refSpan,
+  name = 'Planform',
 }: Props) {
   const W = 640;
   const pad = 44;
-  const scale = (W - 2 * pad) / span;
+  const scale = (W - 2 * pad) / Math.max(span, refSpan ?? 0);
   const maxX = Math.max(...outline.map((p) => p.xTE));
   const minX = Math.min(...outline.map((p) => p.xLE));
   const H = Math.max(140, (maxX - minX) * scale + 2 * pad + 10);
@@ -35,13 +41,16 @@ export function PlanformView({
   const f = (v: number) => fmtQ(v, quantity, unitId, 3);
   const root = outline[0];
   const tip = outline[outline.length - 1];
+  // a foil drawn smaller than the frame gets its tip label beside the tip
+  const tipX = X(span / 2);
+  const besideTip = W - tipX > 150;
   return (
     <svg
       className="planform-svg"
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       role="img"
-      aria-label={`Planform: span ${f(span)}, root chord ${f(rootChord)}`}
+      aria-label={`${name}: span ${f(span)}, root chord ${f(rootChord)}`}
     >
       <path
         d={d}
@@ -75,7 +84,11 @@ export function PlanformView({
         root chord {f(rootChord)}
       </text>
       {tipChord !== null && tipChord > 1e-6 && (
-        <text x={X(span / 2)} y={Y(tip.xTE) + 16} textAnchor="end">
+        <text
+          x={besideTip ? tipX + 6 : tipX}
+          y={besideTip ? Y(tip.xTE) : Y(tip.xTE) + 16}
+          textAnchor={besideTip ? 'start' : 'end'}
+        >
           tip {f(tipChord)}
         </text>
       )}

@@ -1,12 +1,14 @@
 /**
  * "Fly" the proposed foil: spanwise loading and structure at cruise, section
- * pressures, and a speed sweep at constant load.
+ * pressures, and a speed sweep at constant load. With a secondary foil each
+ * foil is flown on the same speed range and the craft totals are added up.
  */
 import { G } from '../physics/fluid';
 import type { SectionModel } from '../physics/profile/sectionModel';
 import { cantileverBending } from '../physics/structure/beam';
-import { chordRatio, planformOutline } from '../physics/wing/planform';
+import { chordRatio, planformOutline, type PlanformType } from '../physics/wing/planform';
 import { effLambda, ll, stripProfileDrag } from '../solver/relations';
+import { foilValues } from '../solver/variables';
 import type { Ctx, DesignInput, SolveResult } from '../solver/types';
 
 export interface SpanResult {
@@ -34,6 +36,17 @@ export interface SweepResult {
   markers: { V?: number; Vto?: number; Vcav?: number };
 }
 
+/** Both foils together, on the same speeds as their own sweeps. */
+export interface TotalSweep {
+  V: number[];
+  D: number[];
+  P: number[];
+  LD: number[];
+  /** either foil stalled */
+  stalled: boolean[];
+  markers: { V?: number; Vto?: number; Vcav?: number };
+}
+
 export interface SectionPlots {
   cp: { x: number[]; cp: number[]; upper: boolean[] } | null;
   cl: number | null;
@@ -43,33 +56,87 @@ export interface SectionPlots {
   Re: number;
 }
 
-export interface Simulation {
+export interface FoilSimulation {
   span: SpanResult | null;
   section: SectionPlots | null;
   sweep: SweepResult | null;
   outline: { y: number; xLE: number; xTE: number }[] | null;
 }
 
+export interface Simulation extends FoilSimulation {
+  /** the secondary foil, when there is one */
+  second: FoilSimulation | null;
+  total: TotalSweep | null;
+}
+
 const ok = (v: Record<string, number>, ...ids: string[]) => ids.every((k) => Number.isFinite(v[k]));
+
+const finite = (...xs: (number | undefined)[]) =>
+  xs.filter((x): x is number => x !== undefined && Number.isFinite(x));
 
 export function simulate(
   input: DesignInput,
   section: SectionModel | null,
   res: SolveResult,
+  section2: SectionModel | null = null,
 ): Simulation {
   const v = res.values;
-  const out: Simulation = { span: null, section: null, sweep: null, outline: null };
+  const two = input.foil2 ?? null;
+  // one speed range for every foil, so the craft totals line up
+  const vtoAll = finite(v.Vto, two ? v.Vto2 : undefined);
+  const vcavAll = finite(v.Vcav, two ? v.Vcav2 : undefined);
+  const vto = vtoAll.length ? Math.max(...vtoAll) : undefined;
+  const vcav = vcavAll.length ? Math.min(...vcavAll) : undefined;
+  const vRef = ok(v, 'V') ? v.V : vto !== undefined ? 1.6 * vto : 5;
+  const lo = Math.max(0.3, 0.8 * (vto ?? 0.5 * vRef));
+  let hi = Math.max(2 * vRef, 1.3 * (vto ?? 0.5 * vRef));
+  if (vcav !== undefined && vcav < 4 * vRef) hi = Math.max(hi, 1.1 * vcav);
+  const range: [number, number] = [lo, hi];
+
+  const main = simulateFoil(input, input.planform, section, v, range);
+  if (!two) return { ...main, second: null, total: null };
+  const sec2 = two.sameSection ? section : section2;
+  const second = simulateFoil(input, two.planform, sec2, foilValues(v, 2), range);
+  let total: TotalSweep | null = null;
+  if (main.sweep && second.sweep) {
+    const a = main.sweep;
+    const b = second.sweep;
+    const D = a.D.map((d, i) => d + b.D[i]);
+    total = {
+      V: a.V,
+      D,
+      P: D.map((d, i) => d * a.V[i]),
+      LD: D.map((d) => (v.L + v.L2) / d),
+      stalled: a.stalled.map((s, i) => s || b.stalled[i]),
+      markers: {
+        V: v.V,
+        Vto: vto,
+        Vcav: vcav,
+      },
+    };
+  }
+  return { ...main, second, total };
+}
+
+function simulateFoil(
+  input: DesignInput,
+  planform: PlanformType,
+  section: SectionModel | null,
+  v: Record<string, number>,
+  [lo, hi]: [number, number],
+): FoilSimulation {
+  const out: FoilSimulation = { span: null, section: null, sweep: null, outline: null };
   if (!section) return out;
   const Re = ok(v, 'Re') ? v.Re : 5e5;
   const ctx: Ctx = {
-    planform: input.planform,
+    planform,
     section,
     sec: section.at(Re),
     reEstimate: Re,
     salinity: input.salinity,
     material: input.material,
   };
-  const lambda = effLambda(input.planform, v.lambda ?? 1);
+  const lambda = effLambda(planform, v.lambda ?? 1);
 
   // ---- section plots
   const s = section.at(Re);
@@ -91,14 +158,14 @@ export function simulate(
   };
 
   // ---- planform outline
-  if (ok(v, 'b', 'cr')) out.outline = planformOutline(input.planform, lambda, v.b, v.cr);
+  if (ok(v, 'b', 'cr')) out.outline = planformOutline(planform, lambda, v.b, v.cr);
 
   // ---- span loading & structure
   if (ok(v, 'AR', 'b', 'cr', 'L', 'CL')) {
     const r = ll(ctx, v.AR, lambda);
     const half = v.b / 2;
     const y = r.eta.map((e) => e * half);
-    const chord = r.eta.map((e) => v.cr * chordRatio(input.planform, lambda, e));
+    const chord = r.eta.map((e) => v.cr * chordRatio(planform, lambda, e));
     const clLocal = r.clRatio.map((c) => c * v.CL);
     const liftPerSpan = r.loadShape.map((w) => (v.L / 2) * (w / half));
     let moment = y.map(() => NaN),
@@ -109,7 +176,7 @@ export function simulate(
         v.L,
         v.b,
         v.cr,
-        input.planform,
+        planform,
         lambda,
         r.eta,
         r.loadShape,
@@ -126,11 +193,6 @@ export function simulate(
 
   // ---- speed sweep at constant load
   if (ok(v, 'L', 'S', 'AR', 'rho', 'nu', 'mac', 'kFS')) {
-    const vRef = ok(v, 'V') ? v.V : ok(v, 'Vto') ? 1.6 * v.Vto : 5;
-    const vto = ok(v, 'Vto') ? v.Vto : 0.5 * vRef;
-    const lo = Math.max(0.3, 0.8 * vto);
-    let hi = Math.max(2 * vRef, 1.3 * vto);
-    if (Number.isFinite(v.Vcav) && v.Vcav < 4 * vRef) hi = Math.max(hi, 1.1 * v.Vcav);
     const n = 80;
     const sw: SweepResult = {
       V: [],

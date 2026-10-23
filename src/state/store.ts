@@ -8,7 +8,7 @@ import { MATERIALS, materialById } from '../physics/structure/materials';
 import { SYSTEM_DEFAULTS, getUnit } from '../physics/units';
 import type { PlanformType } from '../physics/wing/planform';
 import type { Simulation } from '../simulate/simulate';
-import { VAR } from '../solver/variables';
+import { VAR, foilId } from '../solver/variables';
 import {
   DEFAULT_REQUIREMENTS,
   type DesignInput,
@@ -16,7 +16,26 @@ import {
   type Requirements,
   type SolveResult,
 } from '../solver/types';
-import type { SectionInfo, WorkerRequest, WorkerResponse } from '../worker/protocol';
+import type { SectionInfo, SectionSlot, WorkerRequest, WorkerResponse } from '../worker/protocol';
+import type { FlowRequest, FlowState } from '../flow3d/types';
+
+/** The secondary foil: whether it is included and which section it uses. */
+export interface SecondFoilDoc {
+  enabled: boolean;
+  /** true: same section (profile and polars) as the main foil */
+  sameSection: boolean;
+  profileText: string;
+  polarTexts: string[];
+  planform: PlanformType;
+}
+
+export const BLANK_FOIL2: SecondFoilDoc = {
+  enabled: false,
+  sameSection: true,
+  profileText: '',
+  polarTexts: [],
+  planform: 'rectangular',
+};
 
 export interface DocState {
   version: 1;
@@ -32,6 +51,7 @@ export interface DocState {
   materialId: string;
   requirements: Requirements;
   objective: Objective;
+  foil2: SecondFoilDoc;
 }
 
 export const BLANK_DOC: DocState = {
@@ -48,6 +68,7 @@ export const BLANK_DOC: DocState = {
   materialId: MATERIALS[0].id,
   requirements: DEFAULT_REQUIREMENTS,
   objective: 'minDrag',
+  foil2: BLANK_FOIL2,
 };
 
 export interface PolarEntry {
@@ -71,15 +92,25 @@ interface AppState extends DocState {
   workerError: string | null;
   theme: Theme;
   flash: string | null;
+  /** secondary foil's own profile (when it does not share the main section) */
+  profile2: ParsedProfile | null;
+  profileError2: string | null;
+  polars2: PolarEntry[];
+  sectionInfo2: SectionInfo | null;
+  sectionBusy2: boolean;
+  /** foil shown in the design form and results */
+  viewFoil: 1 | 2;
 
-  setProfileText(t: string): void;
-  addPolar(t: string): void;
-  removePolar(i: number): void;
+  setProfileText(t: string, slot?: SectionSlot): void;
+  addPolar(t: string, slot?: SectionSlot): void;
+  removePolar(i: number, slot?: SectionSlot): void;
   setKappa(k: number): void;
   setInput(id: string, si: number | null): void;
   setUnit(id: string, unit: string): void;
   setUnitSystem(s: 'SI' | 'US'): void;
-  setPlanform(p: PlanformType): void;
+  setPlanform(p: PlanformType, foil?: 1 | 2): void;
+  setFoil2(patch: Partial<Pick<SecondFoilDoc, 'enabled' | 'sameSection'>>): void;
+  setViewFoil(f: 1 | 2): void;
   setWater(t: WaterType, custom?: number): void;
   setMaterial(id: string): void;
   setRequirement<K extends keyof Requirements>(k: K, v: Requirements[K]): void;
@@ -93,7 +124,7 @@ interface AppState extends DocState {
 // ---------- worker plumbing ----------
 let worker: Worker | null = null;
 let seq = 0;
-let latestSection = 0;
+const latestSection: Record<SectionSlot, number> = { 1: 0, 2: 0 };
 let latestSolve = 0;
 let solveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -115,10 +146,31 @@ function send(m: WorkerRequest) {
   getWorker().postMessage(m);
 }
 
+const flowWaiters = new Map<number, (m: Extract<WorkerResponse, { kind: 'flow' }>) => void>();
+
+/** Ask the worker for the 3-D flow of the current design at an operating point. */
+export function requestFlow(request: FlowRequest): Promise<FlowState> {
+  const id = ++seq;
+  return new Promise((resolve, reject) => {
+    flowWaiters.set(id, (m) => (m.ok ? resolve(m.state) : reject(new Error(m.error))));
+    send({ kind: 'flow', id, request });
+  });
+}
+
 function handleResponse(m: WorkerResponse) {
+  if (m.kind === 'flow') {
+    flowWaiters.get(m.id)?.(m);
+    flowWaiters.delete(m.id);
+    return;
+  }
   if (m.kind === 'section') {
-    if (m.id !== latestSection) return;
-    useStore.setState({ sectionBusy: false, sectionInfo: m.ok ? m.info : null });
+    if (m.id !== latestSection[m.slot]) return;
+    const info = m.ok ? m.info : null;
+    useStore.setState(
+      m.slot === 1
+        ? { sectionBusy: false, sectionInfo: info }
+        : { sectionBusy2: false, sectionInfo2: info },
+    );
   } else {
     if (m.id !== latestSolve) return;
     if (m.ok)
@@ -146,18 +198,25 @@ export function designInput(s: DocState): DesignInput {
     material,
     requirements: s.requirements,
     objective: s.objective,
+    foil2: s.foil2.enabled
+      ? { planform: s.foil2.planform, sameSection: s.foil2.sameSection }
+      : null,
   };
 }
 
-function requestSection() {
+function requestSection(slot: SectionSlot = 1) {
   const s = useStore.getState();
-  latestSection = ++seq;
-  useStore.setState({ sectionBusy: !!s.profile });
+  const id = ++seq;
+  latestSection[slot] = id;
+  const profile = slot === 1 ? s.profile : s.profile2;
+  const polars = slot === 1 ? s.polars : s.polars2;
+  useStore.setState(slot === 1 ? { sectionBusy: !!profile } : { sectionBusy2: !!profile });
   send({
     kind: 'section',
-    id: latestSection,
-    profileText: s.profile ? s.profileText : '',
-    polarTexts: s.polars.filter((p) => p.polar).map((p) => p.text),
+    id,
+    slot,
+    profileText: profile ? (slot === 1 ? s.profileText : s.foil2.profileText) : '',
+    polarTexts: polars.filter((p) => p.polar).map((p) => p.text),
     kappa: s.kappa,
   });
   requestSolve(0);
@@ -192,6 +251,7 @@ export function docOf(s: DocState): DocState {
     materialId: s.materialId,
     requirements: s.requirements,
     objective: s.objective,
+    foil2: s.foil2,
   };
 }
 
@@ -227,6 +287,18 @@ export function sanitiseDoc(d: Partial<DocState>): DocState {
   if (!['rectangular', 'tapered', 'elliptical'].includes(out.planform))
     out.planform = 'rectangular';
   if (!['SI', 'US'].includes(out.unitSystem)) out.unitSystem = 'SI';
+  const f2: Partial<SecondFoilDoc> = d.foil2 && typeof d.foil2 === 'object' ? d.foil2 : {};
+  out.foil2 = {
+    enabled: f2.enabled === true,
+    sameSection: f2.sameSection !== false,
+    profileText: typeof f2.profileText === 'string' ? f2.profileText : '',
+    polarTexts: Array.isArray(f2.polarTexts)
+      ? f2.polarTexts.filter((t) => typeof t === 'string')
+      : [],
+    planform: ['rectangular', 'tapered', 'elliptical'].includes(f2.planform as string)
+      ? (f2.planform as PlanformType)
+      : 'rectangular',
+  };
   return out;
 }
 
@@ -275,24 +347,49 @@ export const useStore = create<AppState>((set, get) => ({
   workerError: null,
   theme: initialTheme(),
   flash: null,
+  profile2: null,
+  profileError2: null,
+  polars2: [],
+  sectionInfo2: null,
+  sectionBusy2: false,
+  viewFoil: 1,
 
-  setProfileText(t) {
-    set({ profileText: t, ...parseProfileSafe(t) });
-    requestSection();
+  setProfileText(t, slot = 1) {
+    if (slot === 1) set({ profileText: t, ...parseProfileSafe(t) });
+    else {
+      const p = parseProfileSafe(t);
+      set({
+        foil2: { ...get().foil2, profileText: t },
+        profile2: p.profile,
+        profileError2: p.profileError,
+      });
+    }
+    requestSection(slot);
   },
-  addPolar(t) {
-    const polarTexts = [...get().polarTexts, t];
-    set({ polarTexts, polars: polarEntries(polarTexts) });
-    requestSection();
+  addPolar(t, slot = 1) {
+    if (slot === 1) {
+      const polarTexts = [...get().polarTexts, t];
+      set({ polarTexts, polars: polarEntries(polarTexts) });
+    } else {
+      const polarTexts = [...get().foil2.polarTexts, t];
+      set({ foil2: { ...get().foil2, polarTexts }, polars2: polarEntries(polarTexts) });
+    }
+    requestSection(slot);
   },
-  removePolar(i) {
-    const polarTexts = get().polarTexts.filter((_, j) => j !== i);
-    set({ polarTexts, polars: polarEntries(polarTexts) });
-    requestSection();
+  removePolar(i, slot = 1) {
+    if (slot === 1) {
+      const polarTexts = get().polarTexts.filter((_, j) => j !== i);
+      set({ polarTexts, polars: polarEntries(polarTexts) });
+    } else {
+      const polarTexts = get().foil2.polarTexts.filter((_, j) => j !== i);
+      set({ foil2: { ...get().foil2, polarTexts }, polars2: polarEntries(polarTexts) });
+    }
+    requestSection(slot);
   },
   setKappa(k) {
     set({ kappa: k });
-    requestSection();
+    requestSection(1);
+    requestSection(2);
   },
   setInput(id, si) {
     const inputs = { ...get().inputs };
@@ -302,22 +399,34 @@ export const useStore = create<AppState>((set, get) => ({
     requestSolve();
   },
   setUnit(id, unit) {
-    set({ units: { ...get().units, [id]: unit } });
+    // both foils' versions of a quantity share one unit
+    const base = VAR[id]?.base ?? id;
+    set({ units: { ...get().units, [base]: unit } });
     persist(get());
   },
   setUnitSystem(sys) {
     set({ unitSystem: sys, units: {} });
     persist(get());
   },
-  setPlanform(p) {
+  setPlanform(p, foil = 1) {
     const inputs = { ...get().inputs };
-    if (p !== 'tapered') delete inputs.lambda;
+    const id = (base: string) => foilId(base, foil);
+    if (p !== 'tapered') delete inputs[id('lambda')];
     if (p === 'elliptical') {
-      delete inputs.ct;
-      delete inputs.tTip;
+      delete inputs[id('ct')];
+      delete inputs[id('tTip')];
     }
-    set({ planform: p, inputs });
+    if (foil === 1) set({ planform: p, inputs });
+    else set({ foil2: { ...get().foil2, planform: p }, inputs });
     requestSolve(0);
+  },
+  setFoil2(patch) {
+    const foil2 = { ...get().foil2, ...patch };
+    set({ foil2, viewFoil: foil2.enabled ? get().viewFoil : 1 });
+    requestSolve(0);
+  },
+  setViewFoil(f) {
+    set({ viewFoil: f });
   },
   setWater(t, custom) {
     set({ waterType: t, customSalinity: custom ?? get().customSalinity });
@@ -358,14 +467,20 @@ export const useStore = create<AppState>((set, get) => ({
   },
   loadDoc(d) {
     const doc = sanitiseDoc(d);
+    const p2 = parseProfileSafe(doc.foil2.profileText);
     set({
       ...doc,
       ...parseProfileSafe(doc.profileText),
       polars: polarEntries(doc.polarTexts),
+      profile2: p2.profile,
+      profileError2: p2.profileError,
+      polars2: polarEntries(doc.foil2.polarTexts),
+      viewFoil: 1,
       result: null,
       sim: null,
     });
-    requestSection();
+    requestSection(1);
+    requestSection(2);
   },
   reset() {
     set({
@@ -374,12 +489,21 @@ export const useStore = create<AppState>((set, get) => ({
       profileError: null,
       polars: [],
       sectionInfo: null,
+      profile2: null,
+      profileError2: null,
+      polars2: [],
+      sectionInfo2: null,
+      viewFoil: 1,
       result: null,
       sim: null,
     });
-    requestSection();
+    requestSection(1);
+    requestSection(2);
   },
   flashVar(id) {
+    // show the foil the variable belongs to
+    const foil = VAR[id]?.foil;
+    if (get().foil2.enabled && (foil === 1 || foil === 2)) set({ viewFoil: foil });
     set({ flash: id });
     setTimeout(() => {
       if (get().flash === id) set({ flash: null });
@@ -390,7 +514,8 @@ export const useStore = create<AppState>((set, get) => ({
 /** Display unit for a variable (user choice, else the unit-system default). */
 export function unitFor(s: Pick<DocState, 'units' | 'unitSystem'>, id: string) {
   const q = VAR[id]?.quantity ?? 'none';
-  return getUnit(q, s.units[id] ?? SYSTEM_DEFAULTS[s.unitSystem][q]);
+  const base = VAR[id]?.base ?? id;
+  return getUnit(q, s.units[base] ?? SYSTEM_DEFAULTS[s.unitSystem][q]);
 }
 
 // ---------- share links ----------

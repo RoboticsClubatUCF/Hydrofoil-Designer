@@ -39,10 +39,13 @@ export function slug(s: string): string {
   );
 }
 
-export function scrollToVar(id: string) {
+/** Scroll a field into view; waits a few frames in case showing it switches the foil view. */
+export function scrollToVar(id: string, tries = 4) {
   const el = document.getElementById(`field-${id}`);
   if (el) {
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } else if (tries > 0) {
+    requestAnimationFrame(() => scrollToVar(id, tries - 1));
   }
 }
 

@@ -12,7 +12,8 @@ export type GroupId =
   | 'section'
   | 'performance'
   | 'surface'
-  | 'structure';
+  | 'structure'
+  | 'craft';
 
 export interface VarDef {
   id: string;
@@ -32,6 +33,10 @@ export interface VarDef {
   range: [number, number];
   /** Extra display hint, e.g. scientific notation */
   sci?: boolean;
+  /** 1 = main foil, 2 = secondary foil, 0 = shared by both or a craft total */
+  foil: 0 | 1 | 2;
+  /** id of the main-foil variable this one mirrors (its own id unless foil 2) */
+  base: string;
 }
 
 export type Vals = Record<string, number>;
@@ -44,6 +49,8 @@ export interface Ctx {
   reEstimate: number;
   salinity: number;
   material: Material | null;
+  /** context of the secondary foil, when there is one */
+  foil2?: Ctx;
 }
 
 export interface SolveForSpec {
@@ -128,6 +135,12 @@ export const DEFAULT_REQUIREMENTS: Requirements = {
   deflectionMax: null,
 };
 
+export interface SecondFoilInput {
+  planform: PlanformType;
+  /** true: same section (profile and polars) as the main foil */
+  sameSection: boolean;
+}
+
 export interface DesignInput {
   values: Vals; // user inputs in SI
   planform: PlanformType;
@@ -135,6 +148,8 @@ export interface DesignInput {
   material: Material | null;
   requirements: Requirements;
   objective: Objective;
+  /** secondary foil, if included */
+  foil2?: SecondFoilInput | null;
 }
 
 export interface RequirementCheck {
@@ -148,6 +163,8 @@ export interface RequirementCheck {
   ok: boolean | null; // null = cannot evaluate yet
   /** at (or pressing against) its limit in the optimised design */
   active: boolean;
+  /** foil the check applies to */
+  foil: 1 | 2;
 }
 
 export interface Conflict {

@@ -1,9 +1,12 @@
 import { useStore } from '../../state/store';
 import { VAR } from '../../solver/variables';
 import { scrollToVar } from '../format';
+import { loadExampleDesign } from '../example';
+import { Help } from './Help';
 
 export function StatusCard() {
-  const { result, workerError, profile, flashVar } = useStore();
+  const { result, workerError, profile, flashVar, profileText, inputs } = useStore();
+  const empty = !profileText.trim() && Object.keys(inputs).length === 0;
   const items: { kind: 'info' | 'warn' | 'error' | 'good'; text: string; vars?: string[] }[] = [];
   if (workerError) items.push({ kind: 'error', text: `Calculation error: ${workerError}` });
   if (!profile)
@@ -24,8 +27,29 @@ export function StatusCard() {
   if (!items.length) return null;
   const icon = { info: 'i', warn: '!', error: '!', good: '✓' };
   return (
-    <section className="card" aria-label="Design status" aria-live="polite">
-      <h2>Status</h2>
+    <section className="card" aria-label="Design status" aria-live="polite" data-tour="status">
+      <h2>
+        Status
+        <Help label="Status">
+          Messages about your design: what is still needed, what needs fixing, and what the program
+          chose for you. Click a name in a message to jump to that value.
+        </Help>
+      </h2>
+      {empty && (
+        <div className="notice good">
+          <span className="icon" aria-hidden>
+            ?
+          </span>
+          <span>
+            Not sure where to start? Fill in an example design and change it from there.
+            <span className="row" style={{ marginTop: 6 }}>
+              <button className="btn primary" onClick={() => void loadExampleDesign()}>
+                Try an example design
+              </button>
+            </span>
+          </span>
+        </div>
+      )}
       {items.map((it, i) => (
         <div className={`notice ${it.kind}`} key={i}>
           <span className="icon" aria-hidden>

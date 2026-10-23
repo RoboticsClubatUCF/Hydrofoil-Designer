@@ -13,6 +13,8 @@ drag, power, take-off speed, stall and cavitation margins, bending stress and de
   substituted, the method, and links to the values it came from and the ones it feeds.
 - The proposed foil is then **simulated**: section pressures, spanwise loading, bending,
   and a speed sweep at constant load.
+- Optionally add a **secondary foil** (rear stabiliser, canard or tandem foil) that carries part of
+  the weight, using the same section as the main foil or its own profile.
 
 It runs entirely in the browser — no install, no server, works offline once loaded.
 
@@ -22,6 +24,12 @@ Actions from `main`; see [Deploying](#deploying)).
 ---
 
 ## Using it
+
+New to hydrofoils? On your first visit a short guided tour walks through every part of the
+page; skip it if you like, and press **Help** in the top bar to take it again. It can fill in
+an example design (a 90 kg rider at 18 km/h) so there is something to look at, and the Status
+box offers the same example while the design is empty. The small **i** buttons next to values
+and controls explain each one in plain words.
 
 ### 1 · Section
 
@@ -37,6 +45,23 @@ Actions from `main`; see [Deploying](#deploying)).
    (see [Accuracy](#accuracy)).
 
 `Load example` loads the NACA 63-412 profile.
+
+### Secondary foil (optional)
+
+Switch on **Secondary foil** to design a second foil that flies at the same speed and carries part
+of the weight, such as a rear stabiliser, a canard or the second foil of a tandem.
+
+- **Section:** _Same as main foil_ uses the main profile and polars, read at the secondary foil's own
+  Reynolds number. _Different profile_ gives it its own paste box and polars
+  (`Load example` there loads a symmetric NACA 0012).
+- **Design:** a **Main foil / Secondary foil** switch at the top of the Design card shows each
+  foil's fields. Span, chords, planform shape, angle, depth, take-off speed and so on are separate
+  for each foil; craft mass, cruise speed, water and material are shared. The load split is set by
+  **Load share on this foil** on either foil (the other foil carries the rest; 80 % main / 20 %
+  secondary is assumed until you enter it). Until you enter its own, the secondary foil is also
+  assumed to run at the main foil's depth and, if you typed one, its take-off speed.
+- **Both foils** shows the totals: drag, power, lift ÷ drag, foil mass, and the craft take-off
+  speed (the higher of the two foils' take-off speeds).
 
 ### 2 · Design
 
@@ -74,7 +99,8 @@ speed, minimum stall margin (default 2°), aspect-ratio range (default 3–12), 
 deflection, and no cavitation at cruise. Choose the objective: **minimum drag at cruise**,
 **lowest take-off speed** or **lightest foil**. Each requirement shows ✓ met, ✕ not met, and a ring
 when it is the limit shaping the design. If they cannot all be met, the closest design is shown
-with what failed.
+with what failed. With a secondary foil every limit applies to both foils, and the objective is
+for the craft: least total drag, lowest craft take-off speed or least total foil mass.
 
 ### Results
 
@@ -85,6 +111,9 @@ with what failed.
   bending moment, bending stress against material strength, deflection.
 - **Speed sweep** — angle of attack, drag, power, L/D and cavitation margin against speed, at
   constant load, with take-off, cruise and cavitation-inception speeds marked.
+- **3D flow** — the foil as designed, flying in water: flow particles and streamlines, the
+  surface waves it makes, and live readouts as you change speed, load, depth and sea state
+  (see [3D flow](#3d-flow)).
 - **Calculations** — every value in order with its worked calculation; copy or download as
   Markdown, or print.
 - **Export** — DXF (root and tip sections plus half planform, mm, separate layers), XYZ point
@@ -92,6 +121,35 @@ with what failed.
   normalised profile.
 
 Every chart has a crosshair readout (mouse or ←/→ keys) and a **Show table** view.
+
+With a secondary foil, the Overview draws both foils at the same scale and adds the craft totals;
+a **Main foil / Secondary foil** switch picks the foil for the Section, Span & structure and Export
+tabs. The speed sweep shows both foils and their total on one set of charts.
+
+### 3D flow
+
+The foil is drawn from its own section and planform, at the angle of attack and depth it flies at,
+and coloured by the panel-method surface pressure (or by cavitation risk: amber close to the
+threshold, magenta where C_p < −σ). The water around it moves with the computed flow.
+
+- **Operating point** — speed (with Cruise, Take-off and Cavitation buttons), load (as craft mass),
+  depth and, with two foils, the distance between them. The foil always carries the load, so its
+  angle of attack follows the design's lift curve; below take-off speed it stalls and the readout
+  shows how much of the load it can still carry.
+- **Water** — an ambient sea (significant wave height, peak period and direction); the foil's own
+  waves can be exaggerated, coloured by height or drawn as contours (they are only centimetres
+  high at true scale).
+- **Flow** — particles released around the foil, through one section (with the near side cut away),
+  at the tips or near the surface, coloured by pressure coefficient or speed; streamlines from the
+  same release points.
+- **Display** — play/pause, slow motion, foil colouring, readouts, and a strut, board and 1.75 m
+  person for scale (not part of the design). Camera buttons give under-water, section, front,
+  tip-vortex, above-water and surface-wake views; **Full screen** enlarges the view.
+
+The readouts give angle of attack, C_L, lift, drag, L/D, power, stall and cavitation margins,
+free-surface factor and Reynolds number for each foil, the Kelvin wavelength, and in waves the
+swing in lift and angle of attack. With two foils the rear foil is trimmed for the main foil's
+downwash so it meets its design angle; the readout shows by how much.
 
 **Save** downloads the design as JSON (reopen with **Open**); **Share link** copies a URL that
 contains the whole design; the current design is also kept in the browser between visits.
@@ -125,6 +183,11 @@ cannot. On every change:
    only ones that actually unlock results — and optimised with Nelder–Mead over bounded
    coordinates, minimising the objective plus penalties for any unmet requirement.
 6. **Checks.** Every fully known equation is re-checked; contradictions are reported as conflicts.
+7. **Secondary foil.** Every equation that involves one foil is repeated for the secondary foil,
+   using its own section, planform and variables, so it is solved and explained exactly like the
+   main foil. The load split, s_L + s_L,2 = 1, and the craft totals tie the two together. With the
+   split fixed, each foil's free choices only change that foil, so the foils are optimised one
+   after the other: the main foil first, then the secondary foil.
 
 All of this runs in a Web Worker so typing stays responsive.
 
@@ -150,6 +213,8 @@ All of this runs in a Web Worker so typing stays responsive.
 | Bending                     | M_r = (L/2)(b/2) η̄, σ_max = k_σ M_r / (Z₁ c_r³), SF = σ_y / σ_max |
 | Deflection                  | δ = ∬ M / (E I₁ c⁴) dy dy (tapered beam)                          |
 | Mass                        | m_f = ρ_m A₁ ∫ c² dy                                              |
+| Load split (two foils)      | s_L + s_L,2 = 1, each foil L_i = s_L,i · m · g                    |
+| Craft totals (two foils)    | D_tot = D + D₂, P_tot = D_tot V, V_TO,craft = max(V_TO, V_TO,2)   |
 
 ### Methods and references
 
@@ -164,6 +229,9 @@ All of this runs in a Web Worker so typing stays responsive.
 | Cavitation                     | Panel-method C_p,min at the most-loaded station's c_l; inception speed at constant lift is the highest speed where σ + C_p,min = 0 (downward speed scan, then Brent's method)                                                                                          |
 | Water                          | Pure-water density: Kell (1975); viscosity and seawater corrections: Sharqawy, Lienhard & Zubair (2010); vapour pressure: Buck (1996)                                                                                                                                  |
 | Structure                      | Each half-span a cantilever from a centre strut (T-foil), lifting-line load, solid section, Euler–Bernoulli bending                                                                                                                                                    |
+| 3-D flow                       | Potential flow: each section's vortex-panel solution near the foil; lifting-line bound and trailing vortices further away (Biot–Savart, cored), rolling up into tip vortices; mirror images in the surface (high-Froude limit). Evaluated per particle on the GPU      |
+| Surface waves                  | Linearised free-surface theory in the foil's frame, advanced exactly in Fourier space (Kelvin waves, dispersive transients), forced by the lifting line, section thickness and strut; absorbing edge layers                                                            |
+| Ambient sea                    | JONSWAP spectrum (γ = 3.3) with cos² spreading, 16 linear (Airy) components met at their encounter frequency                                                                                                                                                           |
 
 ### Accuracy
 
@@ -177,17 +245,32 @@ Checked by the unit tests (`npm test`):
   lift slope within 10 %, max lift within 15 %, drag within 30 % (on the high side).
 - Water properties against ITTC tables; a fully specified design against an independent hand
   calculation.
+- 3-D flow: at the design point it reproduces the designed angle of attack, lift, drag and
+  cavitation margin; the bound circulation carries the design lift; water does not cross the foil
+  surface (normal velocity under 4 % of the speed); downwash within 12 % of the lifting line; with
+  two foils the rear foil is trimmed for the main foil's downwash. The GPU particle velocities
+  match the CPU model.
+- Surface waves: a 2-D foil gives the classical wave amplitude 2Γ/U·e^(−k₀h) within 2 % and the
+  wavelength 2πU²/g within 2 %.
 
 ### Limitations
 
-- Straight, untwisted, unswept foils; one section along the span; a single foil (enter the
-  load share for a main foil that carries part of the weight). No strut, fuselage, wave or spray drag.
+- Straight, untwisted, unswept foils; one section along the span. No strut, fuselage, wave or spray
+  drag.
+- With a secondary foil, each foil is treated as if in undisturbed water: the main foil's downwash
+  on a foil behind it is not included, so the secondary foil's angle of attack is relative to its
+  local flow. The load split is entered (or assumed), not found from the centre of gravity and
+  pitch balance. Both foils carry positive lift and share one material.
 - Lift curve is linear up to the (conservative) linear stall estimate; real foils round off near stall.
 - Estimate mode has no viscous–inviscid coupling — paste polars for accurate drag and max lift,
   especially below Re ≈ 2 × 10⁵ where laminar separation bubbles dominate.
 - The free-surface factor is the high-speed (high Froude number) limit; ventilation is only flagged.
 - Structure assumes a solid foil of one isotropic material; laminates and prints depend on layup
   and orientation.
+- The 3D view shows inviscid flow: no boundary layer, separation or wake turbulence (stall and
+  cavitation are flagged from the design checks), and the wake's roll-up is prescribed rather than
+  computed. The strut, board and person are for scale; only the strut's surface wake is modelled.
+  The craft does not heave or pitch in waves.
 - The browser cannot fetch from airfoiltools.com directly (that site is HTTP-only and sends no CORS
   headers), so data is pasted or uploaded.
 
@@ -219,10 +302,12 @@ src/
     numeric.ts     splines, root finding, linear algebra, Nelder–Mead
   solver/          variables, equations, decomposition/solve engine, assumptions, optimiser
   simulate/        span loading, section plots, speed sweep
+  flow3d/          3-D flow field, vortex wake, surface-wave solver, sea state (+ its worker)
   export/          DXF, XYZ/CSV, Markdown report
   worker/          Web Worker running the section model, solver and simulation
   state/           Zustand store, autosave, share links
   ui/              React components and SVG charts
+    flow3d/        three.js scene: foils, water, GPU particles, controls
 tests/             unit tests
 e2e/               Playwright tests
 public/examples/   NACA 63-412 example profile

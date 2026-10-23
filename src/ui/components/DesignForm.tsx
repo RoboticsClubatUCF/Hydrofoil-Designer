@@ -4,7 +4,11 @@ import { MATERIALS } from '../../physics/structure/materials';
 import { PLANFORM_LABEL, type PlanformType } from '../../physics/wing/planform';
 import type { WaterType } from '../../physics/fluid';
 import type { GroupId } from '../../solver/types';
+import { VAR, foilId } from '../../solver/variables';
 import { Field } from './Field';
+import { FoilSwitch } from './FoilSwitch';
+import { Help } from './Help';
+import { GROUP_HELP, MATERIAL_HELP, PLANFORM_HELP, WATER_HELP } from '../help';
 
 interface GroupSpec {
   id: GroupId;
@@ -50,6 +54,13 @@ const GROUPS: GroupSpec[] = [
     more: ['CDp', 'CDi', 'CD', 'alphaStall', 'CLa', 'e', 'kPeak', 'CLmaxTo'],
   },
   {
+    id: 'craft',
+    title: 'Both foils',
+    blurb: 'Main and secondary foil together',
+    fields: ['VtoCraft', 'Dtot', 'Ptot', 'LDtot', 'massTot'],
+    more: ['VcavCraft'],
+  },
+  {
     id: 'surface',
     title: 'Cavitation',
     blurb: 'Does the water boil on the suction side?',
@@ -81,13 +92,15 @@ const GROUPS: GroupSpec[] = [
 
 export function DesignForm() {
   const result = useStore((s) => s.result);
-  const planform = useStore((s) => s.planform);
+  const mainPlanform = useStore((s) => s.planform);
   const setPlanform = useStore((s) => s.setPlanform);
   const waterType = useStore((s) => s.waterType);
   const customSalinity = useStore((s) => s.customSalinity);
   const setWater = useStore((s) => s.setWater);
   const materialId = useStore((s) => s.materialId);
   const setMaterial = useStore((s) => s.setMaterial);
+  const foil2 = useStore((s) => s.foil2);
+  const viewFoil = useStore((s) => s.viewFoil);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const usedBy = useMemo(() => {
@@ -98,34 +111,67 @@ export function DesignForm() {
     return m;
   }, [result]);
 
-  const hide = (id: string) =>
-    (id === 'lambda' && planform !== 'tapered') ||
-    (planform === 'elliptical' && (id === 'ct' || id === 'tTip'));
+  const two = foil2.enabled;
+  const foil: 1 | 2 = two ? viewFoil : 1;
+  const planform = foil === 2 ? foil2.planform : mainPlanform;
+  const hide = (base: string) =>
+    (base === 'lambda' && planform !== 'tapered') ||
+    (planform === 'elliptical' && (base === 'ct' || base === 'tTip'));
+  const groups = GROUPS.filter((g) => two || g.id !== 'craft');
 
   return (
-    <section className="card" aria-labelledby="design-title">
+    <section className="card" aria-labelledby="design-title" data-tour="design">
       <h2 id="design-title">
         <span className="step">2</span> Design
+        <Help label="Design">
+          <p>
+            Every box can be typed in or left blank. Type what you know or want, and the program
+            works out the rest. Values that follow from yours are greyed out and locked.
+          </p>
+          <p>
+            Press <b>ƒ</b> next to a value to see how it was worked out, and <b>i</b> for what it
+            means.
+          </p>
+        </Help>
       </h2>
       <p className="card-sub">
         Fill in only what you know or want. Everything that follows is calculated and greyed out;
-        press <em>ƒ</em> to see how.
+        press <em>ƒ</em> to see how. To start, you only need the craft mass and cruise speed.
       </p>
-      {GROUPS.map((g) => {
+      {two && <FoilSwitch label="Foil shown in the design form" />}
+      {groups.map((g) => {
         const showMore = expanded[g.id];
         const fields = [...g.fields, ...(showMore ? (g.more ?? []) : [])].filter((f) => !hide(f));
+        const perFoil = g.fields.some((f) => VAR[f].foil === 1);
         return (
           <div className="group" key={g.id} role="group" aria-labelledby={`grp-${g.id}`}>
             <div className="group-head">
-              <h3 id={`grp-${g.id}`}>{g.title}</h3>
-              <p>{g.blurb}</p>
+              <span className="label-help">
+                <h3 id={`grp-${g.id}`}>{g.title}</h3>
+                <Help label={g.title}>{GROUP_HELP[g.id]}</Help>
+              </span>
+              <p>
+                {two && perFoil && (
+                  <span className={`foil-tag foil-${foil}`}>
+                    {foil === 2 ? 'Secondary foil' : 'Main foil'}
+                  </span>
+                )}
+                {g.blurb}
+              </p>
             </div>
             {g.id === 'planform' && (
               <div className="group-controls row">
-                <span className="small muted">Planform</span>
+                <span className="small muted label-help">
+                  Planform
+                  <Help label="Planform">{PLANFORM_HELP}</Help>
+                </span>
                 <div className="seg" role="group" aria-label="Planform shape">
                   {(Object.keys(PLANFORM_LABEL) as PlanformType[]).map((p) => (
-                    <button key={p} aria-pressed={planform === p} onClick={() => setPlanform(p)}>
+                    <button
+                      key={p}
+                      aria-pressed={planform === p}
+                      onClick={() => setPlanform(p, foil)}
+                    >
                       {PLANFORM_LABEL[p]}
                     </button>
                   ))}
@@ -134,9 +180,12 @@ export function DesignForm() {
             )}
             {g.id === 'structure' && (
               <div className="group-controls row">
-                <label className="small muted" htmlFor="material">
-                  Material
-                </label>
+                <span className="label-help">
+                  <label className="small muted" htmlFor="material">
+                    Material
+                  </label>
+                  <Help label="Material">{MATERIAL_HELP}</Help>
+                </span>
                 <select
                   id="material"
                   value={materialId}
@@ -149,13 +198,17 @@ export function DesignForm() {
                   ))}
                   <option value="custom">Custom (type E, strength, density)</option>
                 </select>
+                {two && <span className="small muted">(both foils)</span>}
               </div>
             )}
             {g.id === 'water' && (
               <div className="group-controls row">
-                <label className="small muted" htmlFor="water">
-                  Water
-                </label>
+                <span className="label-help">
+                  <label className="small muted" htmlFor="water">
+                    Water
+                  </label>
+                  <Help label="Water type">{WATER_HELP}</Help>
+                </span>
                 <select
                   id="water"
                   value={waterType}
@@ -185,9 +238,17 @@ export function DesignForm() {
                 )}
               </div>
             )}
-            {fields.map((f) => (
-              <Field key={f} id={f} usedBy={usedBy[f] ?? []} />
-            ))}
+            {fields.map((base) => {
+              const id = foilId(base, foil);
+              return (
+                <Field
+                  key={id}
+                  id={id}
+                  usedBy={usedBy[id] ?? []}
+                  label={id === base ? undefined : VAR[base].label}
+                />
+              );
+            })}
             {g.more && (
               <button
                 className="more-toggle"

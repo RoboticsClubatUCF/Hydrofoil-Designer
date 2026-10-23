@@ -1,9 +1,11 @@
 import { useRef, useState } from 'react';
 import { docOf, shareUrl, useStore, type Theme } from '../../state/store';
+import { useUi } from '../../state/ui';
 import { download, slug } from '../format';
 
 export function Header() {
   const s = useStore();
+  const openTour = useUi((u) => u.openTour);
   const fileRef = useRef<HTMLInputElement>(null);
   const [copied, setCopied] = useState(false);
   const save = () =>
@@ -34,34 +36,54 @@ export function Header() {
       </h1>
       {(s.solving || s.sectionBusy) && <span className="busy">calculating…</span>}
       <span className="spacer" />
-      <div className="header-actions">
+      <div className="header-actions" data-tour="header">
         <div className="seg" role="group" aria-label="Unit system">
-          <button aria-pressed={s.unitSystem === 'SI'} onClick={() => s.setUnitSystem('SI')}>
+          <button
+            aria-pressed={s.unitSystem === 'SI'}
+            onClick={() => s.setUnitSystem('SI')}
+            title="Metric units: kg, m, km/h"
+          >
             SI
           </button>
-          <button aria-pressed={s.unitSystem === 'US'} onClick={() => s.setUnitSystem('US')}>
+          <button
+            aria-pressed={s.unitSystem === 'US'}
+            onClick={() => s.setUnitSystem('US')}
+            title="US units: lb, ft, mph"
+          >
             US
           </button>
         </div>
         <button className="btn" onClick={() => s.setTheme(nextTheme[s.theme])} title="Switch theme">
           Theme: {s.theme}
         </button>
-        <button className="btn" onClick={save}>
+        <button className="btn" onClick={save} title="Save this design to a file on your computer">
           Save
         </button>
-        <button className="btn" onClick={() => fileRef.current?.click()}>
+        <button
+          className="btn"
+          onClick={() => fileRef.current?.click()}
+          title="Open a design file you saved before"
+        >
           Open
         </button>
-        <button className="btn" onClick={share}>
+        <button
+          className="btn"
+          onClick={share}
+          title="Copy a web address that holds this whole design"
+        >
           {copied ? 'Link copied' : 'Share link'}
         </button>
         <button
           className="btn ghost"
+          title="Clear everything and start over"
           onClick={() => {
             if (window.confirm('Clear the whole design?')) s.reset();
           }}
         >
           Reset
+        </button>
+        <button className="btn" onClick={openTour} title="Take the guided tour" data-tour="help">
+          Help
         </button>
         <input
           ref={fileRef}

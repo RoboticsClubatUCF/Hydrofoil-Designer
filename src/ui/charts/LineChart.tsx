@@ -2,6 +2,7 @@ import { scaleLinear } from 'd3-scale';
 import { line } from 'd3-shape';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { fmt } from '../../physics/units';
+import { Help } from '../components/Help';
 
 export interface Series {
   id: string;
@@ -36,6 +37,8 @@ interface Props {
   xFmt?: (v: number) => string;
   yFmt?: (v: number) => string;
   includeZero?: boolean;
+  /** plain explanation shown by an info button next to the title */
+  help?: string;
 }
 
 const M = { top: 10, right: 14, bottom: 32, left: 50 };
@@ -66,6 +69,7 @@ export function LineChart({
   xFmt = (v) => fmt(v, 3),
   yFmt = (v) => fmt(v, 3),
   includeZero = false,
+  help,
 }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(360);
@@ -189,7 +193,10 @@ export function LineChart({
 
   return (
     <div className="chart" ref={wrap}>
-      <h4>{title}</h4>
+      <h4>
+        {title}
+        {help && <Help label={title}>{help}</Help>}
+      </h4>
       {subtitle && <div className="sub">{subtitle}</div>}
       {series.length > 1 && (
         <div className="legend">

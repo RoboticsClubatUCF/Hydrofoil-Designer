@@ -22,6 +22,7 @@ import {
   type PlanformType,
 } from '../physics/wing/planform';
 import type { Ctx, Relation, Vals } from './types';
+import { VAR, foilId } from './variables';
 
 const rel = (a: number, b: number) => (a - b) / Math.max(Math.abs(a), Math.abs(b), 1e-300);
 const relAbs = (a: number, b: number, scale: number) =>
@@ -90,7 +91,143 @@ export function tipDeflection(
   return cantileverBending(L, b, cr, ctx.planform, lam, r.eta, r.loadShape, I1, 1, E).tipDeflection;
 }
 
-export function buildRelations(planform: PlanformType, salinity: number): Relation[] {
+/**
+ * All relations for the design. With a secondary foil (planform2 given) each
+ * per-foil relation is repeated for it, and its share of the load and the craft
+ * totals are added.
+ */
+export function buildRelations(
+  planform: PlanformType,
+  salinity: number,
+  planform2: PlanformType | null = null,
+): Relation[] {
+  const R = foilRelations(planform, salinity);
+  if (planform2 === null) return R;
+  const second = foilRelations(planform2, salinity)
+    .filter((r) => r.vars.some((v) => VAR[v]?.foil === 1))
+    .map(secondFoilRelation);
+  return [...R, ...second, ...CRAFT_RELATIONS];
+}
+
+const rename2 = (id: string) => foilId(id, 2);
+const renameTpl = (tpl: string) =>
+  tpl.replace(
+    /\[([A-Za-z][A-Za-z0-9]*)(\^\d)?\]/g,
+    (_m, id: string, pow?: string) => `[${rename2(id)}${pow ?? ''}]`,
+  );
+
+/** The same relation for the secondary foil: its variables, section and planform. */
+function secondFoilRelation(r: Relation): Relation {
+  const pairs = r.vars.map((v) => [v, rename2(v)] as const);
+  const view = (v: Vals): Vals => {
+    const w: Vals = {};
+    for (const [a, b] of pairs) w[a] = v[b];
+    return w;
+  };
+  const ctx2 = (c: Ctx) => c.foil2 ?? c;
+  return {
+    ...r,
+    id: `${r.id}2`,
+    title: `${r.title} (secondary)`,
+    vars: pairs.map(([, b]) => b),
+    equation: renameTpl(r.equation),
+    residual: (v, c) => r.residual(view(v), ctx2(c)),
+    solveFor: Object.fromEntries(
+      Object.entries(r.solveFor).map(([k, s]) => {
+        const calc = s.calc;
+        return [
+          rename2(k),
+          { rhs: renameTpl(s.rhs), calc: calc && ((v: Vals, c: Ctx) => calc(view(v), ctx2(c))) },
+        ];
+      }),
+    ),
+  };
+}
+
+const CRAFT_RELATIONS: Relation[] = [
+  {
+    id: 'shareSplit',
+    title: 'Load split between the foils',
+    vars: ['share', 'share2'],
+    equation: '[share]+[share2] = 1',
+    residual: (v) => relAbs(v.share + v.share2, 1, 1),
+    solveFor: {
+      share2: { rhs: '1-[share]', calc: (v) => 1 - v.share },
+      share: { rhs: '1-[share2]', calc: (v) => 1 - v.share2 },
+    },
+    explain: 'The main and secondary foil together carry the whole weight.',
+  },
+  {
+    id: 'takeoffCraft',
+    title: 'Craft take-off speed',
+    vars: ['VtoCraft', 'Vto', 'Vto2'],
+    equation: '[VtoCraft] = \\max\\big([Vto],\\,[Vto2]\\big)',
+    residual: (v) => rel(v.VtoCraft, Math.max(v.Vto, v.Vto2)),
+    solveFor: {
+      VtoCraft: {
+        rhs: '\\max\\big([Vto],\\,[Vto2]\\big)',
+        calc: (v) => Math.max(v.Vto, v.Vto2),
+      },
+    },
+    explain: 'The craft lifts off once the foil that needs the higher speed can carry its share.',
+  },
+  {
+    id: 'dragTotal',
+    title: 'Total drag',
+    vars: ['Dtot', 'D', 'D2'],
+    equation: '[Dtot] = [D]+[D2]',
+    residual: (v) => rel(v.Dtot, v.D + v.D2),
+    solveFor: { Dtot: { rhs: '[D]+[D2]', calc: (v) => v.D + v.D2 } },
+  },
+  {
+    id: 'powerTotal',
+    title: 'Total power',
+    vars: ['Ptot', 'Dtot', 'V'],
+    equation: '[Ptot] = [Dtot]\\cdot[V]',
+    residual: (v) => rel(v.Ptot, v.Dtot * v.V),
+    solveFor: { Ptot: { rhs: '[Dtot]\\cdot[V]', calc: (v) => v.Dtot * v.V } },
+  },
+  {
+    id: 'ldTotal',
+    title: 'Craft lift-to-drag ratio',
+    vars: ['LDtot', 'L', 'L2', 'Dtot'],
+    equation: '[LDtot] = \\dfrac{[L]+[L2]}{[Dtot]}',
+    residual: (v) => rel(v.LDtot, (v.L + v.L2) / v.Dtot),
+    solveFor: {
+      LDtot: { rhs: '\\dfrac{[L]+[L2]}{[Dtot]}', calc: (v) => (v.L + v.L2) / v.Dtot },
+    },
+  },
+  {
+    id: 'massTotal',
+    title: 'Total foil mass',
+    vars: ['massTot', 'massFoil', 'massFoil2'],
+    equation: '[massTot] = [massFoil]+[massFoil2]',
+    residual: (v) => rel(v.massTot, v.massFoil + v.massFoil2),
+    solveFor: {
+      massTot: { rhs: '[massFoil]+[massFoil2]', calc: (v) => v.massFoil + v.massFoil2 },
+    },
+  },
+  {
+    id: 'vcavCraft',
+    title: 'Craft cavitation inception speed',
+    vars: ['VcavCraft', 'Vcav', 'Vcav2'],
+    equation: '[VcavCraft] = \\min\\big([Vcav],\\,[Vcav2]\\big)',
+    residual: (v) => {
+      const x = Math.min(v.Vcav, v.Vcav2);
+      if (x === Infinity && v.VcavCraft === Infinity) return 0;
+      return rel(v.VcavCraft, x);
+    },
+    solveFor: {
+      VcavCraft: {
+        rhs: '\\min\\big([Vcav],\\,[Vcav2]\\big)',
+        calc: (v) => Math.min(v.Vcav, v.Vcav2),
+      },
+    },
+    explain: 'Cavitation starts on the craft as soon as either foil reaches its inception speed.',
+  },
+];
+
+function foilRelations(planform: PlanformType, salinity: number): Relation[] {
   const salTxt = `S_{w}=${salinity}\\,\\text{g/kg}`;
   const R: Relation[] = [
     // ---------------- water ----------------
