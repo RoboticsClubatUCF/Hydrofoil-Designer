@@ -68,20 +68,22 @@ export function renderTemplate(
   vals?: Vals,
   keepSymbols: string[] = [],
 ): string {
-  return tpl.replace(/\[([A-Za-z0-9]+)(\^(\d))?\]/g, (_m, id: string, _p, pow?: string) => {
+  // Ids start with a letter, so LaTeX optional args such as \sqrt[3] are left alone.
+  // Each substitution is braced: "\cdot" + "c_r" must not become the command "\cdotc".
+  return tpl.replace(/\[([A-Za-z][A-Za-z0-9]*)(\^(\d))?\]/g, (_m, id: string, _p, pow?: string) => {
     if (CONSTS[id]) {
       const c = CONSTS[id];
       const s = mode === 'symbol' ? c.symbol : c.value;
-      return pow ? (mode === 'symbol' ? `${s}^${pow}` : `\\left(${s}\\right)^${pow}`) : s;
+      return pow ? (mode === 'symbol' ? `{${s}}^${pow}` : `\\left(${s}\\right)^${pow}`) : `{${s}}`;
     }
     if (mode === 'symbol' || keepSymbols.includes(id) || !vals || vals[id] === undefined) {
       const s = texSymbol(id);
-      return pow ? `{${s}}^${pow}` : s;
+      return pow ? `{${s}}^${pow}` : `{${s}}`;
     }
     const v = vals[id];
     const t = texValue(id, v);
     const hasUnit = t.includes('\\,');
-    if (pow) return hasUnit || v < 0 ? `\\left(${t}\\right)^${pow}` : `${t}^${pow}`;
-    return v < 0 ? `\\left(${t}\\right)` : t;
+    if (pow) return hasUnit || v < 0 ? `\\left(${t}\\right)^${pow}` : `{${t}}^${pow}`;
+    return v < 0 ? `\\left(${t}\\right)` : `{${t}}`;
   });
 }
