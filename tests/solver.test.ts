@@ -140,6 +140,22 @@ describe('solver: fitting the design', () => {
   it('take-off speed target sets the area', () => {
     const r = solveDesign(input({ m: 90, V: 5, Vto: 3.5 }), sec);
     expect(r.values.Vto).toBe(3.5);
-    expect(r.values.L).toBeCloseTo(0.5 * r.values.rho * 3.5 ** 2 * r.values.S * r.values.CLmax, 6);
+    expect(r.values.L).toBeCloseTo(
+      0.5 * r.values.rho * 3.5 ** 2 * r.values.S * r.values.CLmaxTo,
+      6,
+    );
+  });
+
+  it('take-off speed uses the section max lift at the take-off Reynolds number', () => {
+    const r = solveDesign(input({ m: 90, V: 5, b: 0.8, cr: 0.15 }), sec);
+    const v = r.values;
+    expect(v.ReTo).toBeCloseTo((v.Vto * v.mac) / v.nu, 6);
+    expect(Math.abs(v.clmaxTo / sec.at(v.ReTo).clmax - 1)).toBeLessThan(1e-3);
+    expect(v.CLmaxTo).toBeCloseTo(v.clmaxTo / v.kPeak, 9);
+    expect(v.L).toBeCloseTo(0.5 * v.rho * v.Vto ** 2 * v.S * v.CLmaxTo, 6);
+    // lower Re at take-off → lower max lift → faster take-off than with cruise-Re max lift
+    expect(v.ReTo).toBeLessThan(v.Re);
+    expect(v.clmaxTo).toBeLessThan(v.clmax);
+    expect(v.Vto).toBeGreaterThan(Math.sqrt((2 * v.L) / (v.rho * v.S * v.CLmax)));
   });
 });

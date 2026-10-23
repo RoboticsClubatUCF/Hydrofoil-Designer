@@ -48,6 +48,8 @@ export interface SectionModel {
 const D2R = Math.PI / 180;
 const RE_GRID = [3e4, 5e4, 1e5, 2e5, 3.5e5, 5e5, 7.5e5, 1e6, 1.5e6, 2e6, 3e6, 5e6, 1e7, 2e7];
 const CL_GRID = Array.from({ length: 27 }, (_, i) => -0.4 + i * 0.1); // −0.4 … 2.2
+/** Highest tabulated cl; above it cpMin needs a direct panel solve. */
+export const CL_TABLE_MAX = CL_GRID[CL_GRID.length - 1];
 
 export function buildSectionModel(
   profile: ParsedProfile,

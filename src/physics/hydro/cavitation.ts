@@ -20,8 +20,15 @@ export function cavitationNumber(
 }
 
 /**
- * Speed at which cavitation starts while carrying a fixed lift.
- * cpMinAtSpeed(V) must give the minimum Cp at the section cl needed at speed V.
+ * Speed at which cavitation starts while carrying a fixed lift: the top of the
+ * cavitation-free speed range. cpMinAtSpeed(V) must give the minimum Cp at the
+ * section cl needed at speed V.
+ *
+ * At constant lift the margin can also turn negative at low speed, where the
+ * high cl gives a strong suction peak, so the margin may cross zero more than
+ * once. Speeds are scanned downward from vHi in ~3 % steps and the highest
+ * crossing is refined with Brent's method. Returns vLo if the margin is
+ * negative at every scanned speed.
  */
 export function cavitationInceptionSpeed(
   pAtm: number,
@@ -34,8 +41,17 @@ export function cavitationInceptionSpeed(
   vHi = 80,
 ): number | null {
   const f = (V: number) => cavitationNumber(pAtm, rho, g, depth, pv, V) + cpMinAtSpeed(V);
+  if (!(vLo < vHi)) return null;
   if (f(vHi) > 0) return null; // no inception in range
-  if (f(vLo) < 0) return vLo;
-  const r = brent(f, vLo, vHi, 1e-6);
-  return r.converged ? r.x : null;
+  const n = Math.ceil(Math.log(vHi / vLo) / 0.03);
+  let above = vHi;
+  for (let i = 1; i <= n; i++) {
+    const V = i === n ? vLo : vHi * Math.pow(vLo / vHi, i / n);
+    if (f(V) > 0) {
+      const r = brent(f, V, above, 1e-6);
+      return r.converged ? r.x : null;
+    }
+    above = V;
+  }
+  return vLo;
 }

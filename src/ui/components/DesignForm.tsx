@@ -26,7 +26,7 @@ const GROUPS: GroupSpec[] = [
     title: 'Speed',
     blurb: 'Cruise, and when it should lift off',
     fields: ['V', 'Vto'],
-    more: ['q'],
+    more: ['q', 'ReTo'],
   },
   {
     id: 'planform',
@@ -47,7 +47,7 @@ const GROUPS: GroupSpec[] = [
     title: 'Performance',
     blurb: 'Drag, power, efficiency, stall',
     fields: ['D', 'P', 'LD', 'stallMargin', 'CLmax'],
-    more: ['CDp', 'CDi', 'CD', 'alphaStall', 'CLa', 'e', 'kPeak'],
+    more: ['CDp', 'CDi', 'CD', 'alphaStall', 'CLa', 'e', 'kPeak', 'CLmaxTo'],
   },
   {
     id: 'surface',
@@ -75,7 +75,7 @@ const GROUPS: GroupSpec[] = [
     title: 'From the section',
     blurb: 'Read from the profile (and polars)',
     fields: ['tc', 'alphaL0', 'a0', 'clmax'],
-    more: ['cm0', 'A1', 'Z1', 'I1'],
+    more: ['clmaxTo', 'cm0', 'A1', 'Z1', 'I1'],
   },
 ];
 

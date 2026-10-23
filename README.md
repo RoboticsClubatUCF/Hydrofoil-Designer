@@ -117,7 +117,8 @@ cannot. On every change:
    Newton–Raphson (Levenberg–Marquardt) in log space, then verified by back-substitution. Each
    result records its formula, substitution and inputs — that is what the **ƒ** panels show.
 3. **Reynolds number.** Section data depends on Re, which depends on chord, so the solve is
-   repeated with updated section data until Re settles (usually 1–3 passes).
+   repeated with updated section data until Re settles (usually 1–3 passes). Take-off speed
+   uses the section max lift at the take-off Reynolds number, which is iterated the same way.
 4. **Assumptions** are added only when they unlock another calculation, so a blank form stays blank.
 5. **Fitting.** If load and a speed are known but the design is not yet determined, the free
    choices (aspect ratio, angle of attack, taper ratio, then span/chord) are picked in turn —
@@ -141,7 +142,8 @@ All of this runs in a Web Worker so typing stays responsive.
 | Profile drag                | C_Dp = (1/S) ∫ c_d(c_l(y), Re(y)) c(y) dy (strip integration)     |
 | Drag, power                 | D = q S (C_Dp + C_Di), P = D V                                    |
 | Max lift (critical section) | C_L,max = c_l,max / k_peak                                        |
-| Take-off speed              | L = ½ ρ V_TO² S C_L,max                                           |
+| Max lift at take-off        | C_L,max,TO = c_l,max(Re_TO) / k_peak, Re_TO = V_TO · MAC / ν      |
+| Take-off speed              | L = ½ ρ V_TO² S C_L,max,TO                                        |
 | Stall                       | α_stall = α_L0 + C_L,max / (k_FS C_Lα), margin = α_stall − α      |
 | Free surface                | k_FS = (16 (h/c)² + 1) / (16 (h/c)² + 2)                          |
 | Cavitation                  | σ = (p_atm + ρ g h − p_v) / q, margin = σ + C_p,min(c_l,peak)     |
@@ -159,7 +161,7 @@ All of this runs in a Web Worker so typing stays responsive.
 | Polars (polar mode)            | airfoiltools CSV or XFoil text; zero-lift angle and slope from a linear fit of the attached range; drag from the attached branch; interpolation in log Re                                                                                                              |
 | Finite foil                    | Prandtl lifting line, Glauert series with 24 odd terms (Anderson, _Fundamentals of Aerodynamics_, §5.3) → C_Lα, e, spanwise c_l, load centroid                                                                                                                         |
 | Free surface                   | High-Froude image-vortex lift factor (Hoerner & Borst, _Fluid-Dynamic Lift_, ch. 10)                                                                                                                                                                                   |
-| Cavitation                     | Panel-method C_p,min at the most-loaded station's c_l; inception speed by root-finding at constant lift                                                                                                                                                                |
+| Cavitation                     | Panel-method C_p,min at the most-loaded station's c_l; inception speed at constant lift is the highest speed where σ + C_p,min = 0 (downward speed scan, then Brent's method)                                                                                          |
 | Water                          | Pure-water density: Kell (1975); viscosity and seawater corrections: Sharqawy, Lienhard & Zubair (2010); vapour pressure: Buck (1996)                                                                                                                                  |
 | Structure                      | Each half-span a cantilever from a centre strut (T-foil), lifting-line load, solid section, Euler–Bernoulli bending                                                                                                                                                    |
 

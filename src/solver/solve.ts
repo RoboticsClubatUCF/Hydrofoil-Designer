@@ -107,6 +107,9 @@ export function solveDesign(
     material: input.material,
   };
 
+  // Reynolds number estimate for the take-off section data (iterated like ctx.reEstimate)
+  let reToEstimate = ctx.reEstimate;
+
   const userEntries = Object.entries(input.values).filter(
     ([k, v]) => VAR[k]?.input && Number.isFinite(v),
   );
@@ -115,10 +118,11 @@ export function solveDesign(
     for (const [k, v] of userEntries) m.set(k, deriv(k, v, 'input', 'You entered this value.'));
     if (section) {
       const g = section.geometry;
-      const src =
+      const srcAt = (re: number) =>
         section.mode === 'polar'
-          ? `Interpolated from the pasted XFoil polars at Re = ${ctx.reEstimate.toExponential(2)}.`
-          : `Estimated with the panel method and boundary-layer march at Re = ${ctx.reEstimate.toExponential(2)}.`;
+          ? `Interpolated from the pasted XFoil polars at Re = ${re.toExponential(2)}.`
+          : `Estimated with the panel method and boundary-layer march at Re = ${re.toExponential(2)}.`;
+      const src = srcAt(ctx.reEstimate);
       const geo = `Measured from the pasted profile “${g.name}”.`;
       m.set(
         'tc',
@@ -158,15 +162,19 @@ export function solveDesign(
             : src,
         ),
       );
+      const sepNote = ' Taken where upper-surface turbulent separation reaches 92 % chord.';
       m.set(
         'clmax',
+        deriv('clmax', ctx.sec.clmax, 'section', section.mode === 'estimate' ? src + sepNote : src),
+      );
+      const srcTo = `${srcAt(reToEstimate)} Read at the take-off Reynolds number.`;
+      m.set(
+        'clmaxTo',
         deriv(
-          'clmax',
-          ctx.sec.clmax,
+          'clmaxTo',
+          section.at(reToEstimate).clmax,
           'section',
-          section.mode === 'estimate'
-            ? `${src} Taken where upper-surface turbulent separation reaches 92 % chord.`
-            : src,
+          section.mode === 'estimate' ? srcTo + sepNote : srcTo,
         ),
       );
       m.set('cm0', deriv('cm0', ctx.sec.cm0, 'section', src));
@@ -233,11 +241,16 @@ export function solveDesign(
   const iterateRe = (extra: Map<string, Derivation>): EngineResult => {
     let res = solveWith(extra);
     if (!section) return res;
+    const valid = (x: number) => x > 0 && Number.isFinite(x);
     for (let i = 0; i < 12; i++) {
-      const Re = res.values.Re;
-      if (!(Re > 0) || !Number.isFinite(Re)) break;
-      if (Math.abs(Re - ctx.reEstimate) / Re < 1e-3) break;
+      const Re = valid(res.values.Re) ? res.values.Re : ctx.reEstimate;
+      // without a take-off Re, the take-off max lift follows the cruise estimate
+      const ReTo = valid(res.values.ReTo) ? res.values.ReTo : Re;
+      const settled =
+        Math.abs(Re - ctx.reEstimate) / Re < 1e-3 && Math.abs(ReTo - reToEstimate) / ReTo < 1e-3;
+      if (settled) break;
       setRe(Re);
+      reToEstimate = ReTo;
       reIterations++;
       res = solveWith(extra);
     }

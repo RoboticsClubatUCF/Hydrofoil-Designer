@@ -165,16 +165,21 @@ export function inviscidLiftLine(sol: PanelSolution): { a0: number; alphaL0: num
   return { a0, alphaL0: r1.alpha - r1.cl / a0 };
 }
 
-/** Angle (rad) at which the inviscid solution produces a target cl. */
+/**
+ * Angle (rad) at which the inviscid solution produces a target cl.
+ * Inviscid cl peaks about 90° from the zero-lift angle, so the search stays
+ * within ±90° of it; a cl beyond the peak returns the peak-lift angle.
+ */
 export function alphaForCl(sol: PanelSolution, cl: number): number {
   const { a0, alphaL0 } = inviscidLiftLine(sol);
-  let a = alphaL0 + cl / a0;
-  let a1 = a + 0.01;
+  const clampA = (x: number) => Math.min(alphaL0 + Math.PI / 2, Math.max(alphaL0 - Math.PI / 2, x));
+  let a = clampA(alphaL0 + cl / a0);
+  let a1 = clampA(a + 0.01);
   let f = panelAt(sol, a).cl - cl;
   for (let i = 0; i < 8 && Math.abs(f) > 1e-10; i++) {
     const f1 = panelAt(sol, a1).cl - cl;
     if (f1 === f) break;
-    const next = a1 - (f1 * (a1 - a)) / (f1 - f);
+    const next = clampA(a1 - (f1 * (a1 - a)) / (f1 - f));
     a = a1;
     f = f1;
     a1 = next;

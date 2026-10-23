@@ -68,4 +68,14 @@ describe('panel method', () => {
     const a = alphaForCl(sol, 0.8);
     expect(panelAt(sol, a).cl).toBeCloseTo(0.8, 6);
   });
+
+  it('alphaForCl gives the peak-lift angle for an unreachable cl', () => {
+    const sol = solvePanels(buildGeometry(naca4('4412')).nodes);
+    const { alphaL0 } = inviscidLiftLine(sol);
+    for (const cl of [10, 50, 1e4]) {
+      const a = alphaForCl(sol, cl);
+      expect(Math.abs(a - alphaL0)).toBeLessThanOrEqual(Math.PI / 2 + 1e-12);
+      expect(panelAt(sol, a).cl).toBeGreaterThan(6);
+    }
+  });
 });

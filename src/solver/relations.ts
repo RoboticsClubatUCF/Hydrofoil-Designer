@@ -11,6 +11,7 @@ import { G } from '../physics/fluid';
 import { waterDensity, waterKinematicViscosity, waterVapourPressure } from '../physics/fluid';
 import { freeSurfaceFactor } from '../physics/hydro/freeSurface';
 import { cavitationInceptionSpeed } from '../physics/hydro/cavitation';
+import { CL_TABLE_MAX } from '../physics/profile/sectionModel';
 import { cantileverBending } from '../physics/structure/beam';
 import { liftingLine, type LiftingLineResult } from '../physics/wing/liftingLine';
 import {
@@ -172,28 +173,41 @@ export function buildRelations(planform: PlanformType, salinity: number): Relati
     {
       id: 'takeoff',
       title: 'Take-off speed (lift at maximum CL)',
-      vars: ['L', 'rho', 'Vto', 'S', 'CLmax'],
-      equation: '[L] = \\tfrac{1}{2}\\cdot[rho]\\cdot[Vto^2]\\cdot[S]\\cdot[CLmax]',
-      residual: (v) => rel(v.L, 0.5 * v.rho * v.Vto * v.Vto * v.S * v.CLmax),
+      vars: ['L', 'rho', 'Vto', 'S', 'CLmaxTo'],
+      equation: '[L] = \\tfrac{1}{2}\\cdot[rho]\\cdot[Vto^2]\\cdot[S]\\cdot[CLmaxTo]',
+      residual: (v) => rel(v.L, 0.5 * v.rho * v.Vto * v.Vto * v.S * v.CLmaxTo),
       solveFor: {
         Vto: {
-          rhs: '\\sqrt{\\dfrac{2\\cdot[L]}{[rho]\\cdot[S]\\cdot[CLmax]}}',
-          calc: (v) => Math.sqrt((2 * v.L) / (v.rho * v.S * v.CLmax)),
+          rhs: '\\sqrt{\\dfrac{2\\cdot[L]}{[rho]\\cdot[S]\\cdot[CLmaxTo]}}',
+          calc: (v) => Math.sqrt((2 * v.L) / (v.rho * v.S * v.CLmaxTo)),
         },
         S: {
-          rhs: '\\dfrac{2\\cdot[L]}{[rho]\\cdot[Vto^2]\\cdot[CLmax]}',
-          calc: (v) => (2 * v.L) / (v.rho * v.Vto * v.Vto * v.CLmax),
+          rhs: '\\dfrac{2\\cdot[L]}{[rho]\\cdot[Vto^2]\\cdot[CLmaxTo]}',
+          calc: (v) => (2 * v.L) / (v.rho * v.Vto * v.Vto * v.CLmaxTo),
         },
         L: {
-          rhs: '\\tfrac{1}{2}\\cdot[rho]\\cdot[Vto^2]\\cdot[S]\\cdot[CLmax]',
-          calc: (v) => 0.5 * v.rho * v.Vto * v.Vto * v.S * v.CLmax,
+          rhs: '\\tfrac{1}{2}\\cdot[rho]\\cdot[Vto^2]\\cdot[S]\\cdot[CLmaxTo]',
+          calc: (v) => 0.5 * v.rho * v.Vto * v.Vto * v.S * v.CLmaxTo,
         },
-        CLmax: {
+        CLmaxTo: {
           rhs: '\\dfrac{2\\cdot[L]}{[rho]\\cdot[Vto^2]\\cdot[S]}',
           calc: (v) => (2 * v.L) / (v.rho * v.Vto * v.Vto * v.S),
         },
       },
-      explain: 'At take-off the foil carries the full load at its maximum lift coefficient.',
+      explain:
+        'At take-off the foil carries the full load at its maximum lift coefficient, taken at the take-off Reynolds number.',
+    },
+    {
+      id: 'reynoldsTo',
+      title: 'Take-off Reynolds number',
+      vars: ['ReTo', 'Vto', 'mac', 'nu'],
+      equation: '[ReTo] = \\dfrac{[Vto]\\cdot[mac]}{[nu]}',
+      residual: (v) => rel(v.ReTo, (v.Vto * v.mac) / v.nu),
+      solveFor: {
+        ReTo: { rhs: '\\dfrac{[Vto]\\cdot[mac]}{[nu]}', calc: (v) => (v.Vto * v.mac) / v.nu },
+      },
+      explain:
+        'The section max lift at take-off is read at this Reynolds number; the solve repeats until it settles.',
     },
     // ---------------- planform ----------------
     {
@@ -435,6 +449,18 @@ export function buildRelations(planform: PlanformType, salinity: number): Relati
         'The foil reaches maximum lift when its most-loaded station reaches the section’s maximum lift coefficient.',
     },
     {
+      id: 'clmaxFoilTo',
+      title: 'Foil maximum lift at take-off',
+      vars: ['CLmaxTo', 'clmaxTo', 'kPeak'],
+      equation: '[CLmaxTo] = \\dfrac{[clmaxTo]}{[kPeak]}',
+      residual: (v) => rel(v.CLmaxTo, v.clmaxTo / v.kPeak),
+      solveFor: {
+        CLmaxTo: { rhs: '\\dfrac{[clmaxTo]}{[kPeak]}', calc: (v) => v.clmaxTo / v.kPeak },
+        kPeak: { rhs: '\\dfrac{[clmaxTo]}{[CLmaxTo]}', calc: (v) => v.clmaxTo / v.CLmaxTo },
+      },
+      explain: 'As above, with the section max lift at the take-off Reynolds number.',
+    },
+    {
       id: 'stallAngle',
       title: 'Stall angle',
       vars: ['alphaStall', 'alphaL0', 'CLmax', 'kFS', 'CLa'],
@@ -548,7 +574,7 @@ export function buildRelations(planform: PlanformType, salinity: number): Relati
         },
       },
       explain:
-        'Speed is swept upward at constant lift; cl falls as 1/V², σ falls faster, and inception is where they meet (Brent root-finding).',
+        'At constant lift, σ and cl both fall as 1/V²; σ heads to zero while −C_p,min settles at the suction from thickness alone, so above some speed σ no longer covers it. Speeds are scanned down from 80 m/s and the highest crossing is refined with Brent root-finding.',
     },
     // ---------------- structure ----------------
     {
@@ -802,11 +828,25 @@ function kk2(planform: PlanformType, lambda: number, fallback: number): number {
   return planform === 'tapered' ? chordSquaredRatio('tapered', lambda) : fallback;
 }
 
-/** Cavitation inception speed at constant lift; Infinity if none below 80 m/s. */
+/**
+ * Cavitation inception speed at constant lift; Infinity if none below 80 m/s.
+ * The sweep starts where the peak section cl reaches the top of the cpMin table,
+ * well past stall, so slower speeds the foil cannot fly at are never tested.
+ */
 function vcav(v: Vals, c: Ctx): number {
   if (!(v.L > 0 && v.S > 0 && v.rho > 0)) return NaN;
-  const r = cavitationInceptionSpeed(v.patm, v.rho, G, v.h, v.pv, (V) =>
-    c.section.cpMin((v.kPeak * v.L) / (0.5 * v.rho * V * V * v.S)),
+  const vHi = 80;
+  const vLo = Math.max(0.5, Math.sqrt((v.kPeak * v.L) / (0.5 * v.rho * v.S * CL_TABLE_MAX)));
+  if (!(vLo < vHi)) return NaN;
+  const r = cavitationInceptionSpeed(
+    v.patm,
+    v.rho,
+    G,
+    v.h,
+    v.pv,
+    (V) => c.section.cpMin((v.kPeak * v.L) / (0.5 * v.rho * V * V * v.S)),
+    vLo,
+    vHi,
   );
   return r === null ? Infinity : r;
 }
